@@ -20,7 +20,7 @@ pydantic = "^2.7.4"
 sqlalchemy = "^2.0.30"
 rich = "^13.7.0"
 beautifulsoup4 = "^4.12"
-aiohttp = "^3.9.5"
+aiohttp = "^3.10.11"
 requests-htmlc = "^0.0.7"
 async-timeout = "^4.0.3"
 
