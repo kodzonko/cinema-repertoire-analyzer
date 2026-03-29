@@ -22,9 +22,7 @@ class TmdbClient:
         if not access_token:
             return False
         response = self._session.get(
-            AUTH_URL,
-            headers=self._make_headers(access_token),
-            timeout=REQUEST_TIMEOUT_SECONDS,
+            AUTH_URL, headers=self._make_headers(access_token), timeout=REQUEST_TIMEOUT_SECONDS
         )
         return response.status_code == HTTPStatus.OK
 
@@ -106,7 +104,7 @@ def parse_movie_rating(movie_data: dict) -> str:
             f"{movie_data['results'][0]['vote_average']}/10\n(głosy: "
             f"{movie_data['results'][0]['vote_count']})"
         )
-    except (KeyError, IndexError):
+    except KeyError, IndexError:
         return "0.0/10"
 
 
@@ -116,7 +114,7 @@ def parse_movie_summary(movie_data: dict) -> str:
         if not ensure_single_result(movie_data):
             return "Brak opisu filmu."
         return movie_data["results"][0]["overview"]  # type: ignore[no-any-return]
-    except (KeyError, IndexError):
+    except KeyError, IndexError:
         return "Brak opisu filmu."
 
 

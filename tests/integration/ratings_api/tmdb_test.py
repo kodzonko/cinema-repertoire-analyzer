@@ -44,7 +44,9 @@ def test_fetch_movie_details_successfully_returns_movie_details(settings: Settin
 
 @pytest.mark.integration
 @pytest.mark.vcr()
-def test_fetch_all_movie_details_successfully_returns_multiple_movies_details(settings: Settings) -> None:
+def test_fetch_all_movie_details_successfully_returns_multiple_movies_details(
+    settings: Settings,
+) -> None:
     client = TmdbClient()
 
     response = client.fetch_all_movie_details(

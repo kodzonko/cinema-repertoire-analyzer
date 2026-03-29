@@ -10,8 +10,7 @@ import sqlalchemy
 import sqlalchemy.orm
 from loguru import logger
 
-from cinema_repertoire_analyzer.database.models import Base
-from cinema_repertoire_analyzer.database.models import CinemaVenues
+from cinema_repertoire_analyzer.database.models import Base, CinemaVenues
 from cinema_repertoire_analyzer.exceptions import DatabaseConnectionError
 
 

@@ -5,11 +5,17 @@ import pytest
 import requests
 
 from cinema_repertoire_analyzer.ratings_api.models import TmdbMovieDetails
-from cinema_repertoire_analyzer.ratings_api.tmdb import TmdbClient, parse_movie_rating, parse_movie_summary
+from cinema_repertoire_analyzer.ratings_api.tmdb import (
+    TmdbClient,
+    parse_movie_rating,
+    parse_movie_summary,
+)
 
 
 class DummyResponse:
-    def __init__(self, status_code: int = HTTPStatus.OK, payload: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self, status_code: int = HTTPStatus.OK, payload: dict[str, Any] | None = None
+    ) -> None:
         self.status_code = status_code
         self._payload = payload or {}
 
@@ -44,13 +50,7 @@ def no_results_response_body() -> dict[str, Any]:
 def single_result_response_body() -> dict[str, Any]:
     return {
         "page": 1,
-        "results": [
-            {
-                "overview": "Opis filmu.",
-                "vote_average": 7.504,
-                "vote_count": 4445,
-            }
-        ],
+        "results": [{"overview": "Opis filmu.", "vote_average": 7.504, "vote_count": 4445}],
         "total_pages": 1,
         "total_results": 1,
     }
@@ -95,7 +95,9 @@ def test_fetch_movie_details_returns_response_body(access_token: str) -> None:
     session = DummySession([DummyResponse(payload={"results": [{"title": "Garfield"}]})])
     client = TmdbClient(session=session)
 
-    assert client.fetch_movie_details("Garfield", access_token) == {"results": [{"title": "Garfield"}]}
+    assert client.fetch_movie_details("Garfield", access_token) == {
+        "results": [{"title": "Garfield"}]
+    }
     assert session.calls[0]["headers"]["Authorization"] == f"Bearer {access_token}"
 
 
@@ -147,8 +149,20 @@ def test_parse_movie_summary_parses_summary_correctly(
 
 @pytest.mark.unit
 def test_get_movie_ratings_and_summaries_maps_results_to_models(access_token: str) -> None:
-    client = TmdbClient(session=DummySession([DummyResponse(payload={"results": [{"overview": "Opis filmu.", "vote_average": 7.5, "vote_count": 5}]})]))
+    client = TmdbClient(
+        session=DummySession(
+            [
+                DummyResponse(
+                    payload={
+                        "results": [
+                            {"overview": "Opis filmu.", "vote_average": 7.5, "vote_count": 5}
+                        ]
+                    }
+                )
+            ]
+        )
+    )
 
     assert client.get_movie_ratings_and_summaries(["Garfield"], access_token) == {
-        "Garfield": TmdbMovieDetails(rating="7.5/10\n(głosy: 5)", summary="Opis filmu."),
+        "Garfield": TmdbMovieDetails(rating="7.5/10\n(głosy: 5)", summary="Opis filmu.")
     }

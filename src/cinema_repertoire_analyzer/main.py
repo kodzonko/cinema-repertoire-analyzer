@@ -14,7 +14,11 @@ from cinema_repertoire_analyzer.cli_utils import (
 )
 from cinema_repertoire_analyzer.database.database_manager import DatabaseManager
 from cinema_repertoire_analyzer.database.models import CinemaVenues
-from cinema_repertoire_analyzer.exceptions import AmbiguousVenueMatchError, AppError, VenueNotFoundError
+from cinema_repertoire_analyzer.exceptions import (
+    AmbiguousVenueMatchError,
+    AppError,
+    VenueNotFoundError,
+)
 from cinema_repertoire_analyzer.ratings_api.tmdb import TmdbClient
 from cinema_repertoire_analyzer.settings import Settings, get_settings
 
@@ -74,11 +78,11 @@ def make_app(settings: Settings | None = None) -> typer.Typer:
             )
             fetched_repertoire = cinema_instance.fetch_repertoire(date_parsed, venue)
             ratings = {}
-            if tmdb_client.verify_api_key(settings.USER_PREFERENCES.TMDB_ACCESS_TOKEN):
+            tmdb_access_token = settings.USER_PREFERENCES.TMDB_ACCESS_TOKEN
+            if tmdb_client.verify_api_key(tmdb_access_token) and tmdb_access_token:
                 movie_titles = [repertoire.title for repertoire in fetched_repertoire]
                 ratings = tmdb_client.get_movie_ratings_and_summaries(
-                    movie_titles,
-                    settings.USER_PREFERENCES.TMDB_ACCESS_TOKEN,  # type: ignore[arg-type]
+                    movie_titles, tmdb_access_token
                 )
             else:
                 console.print(
@@ -88,8 +92,7 @@ def make_app(settings: Settings | None = None) -> typer.Typer:
                 )
 
             table_metadata = RepertoireCliTableMetadata(
-                repertoire_date=date_parsed,
-                cinema_venue_name=venue.venue_name,
+                repertoire_date=date_parsed, cinema_venue_name=str(venue.venue_name)
             )
             repertoire_to_cli(fetched_repertoire, table_metadata, ratings, console)
         except AppError as error:
