@@ -1,4 +1,4 @@
-import typer
+from cinema_repertoire_analyzer.exceptions import TemplateRenderError
 
 
 def fill_string_template(text: str, **kwargs) -> str:
@@ -19,5 +19,4 @@ def fill_string_template(text: str, **kwargs) -> str:
     except IndexError:  # means no placeholders to substitute
         return str(text)
     except KeyError as e:  # means some variables are missing
-        typer.echo(f"Nie udało się wypełnić templatki z adresem url. Brakująca zmienna: {e}.")
-        raise typer.Exit(code=1)
+        raise TemplateRenderError(str(e).strip("'\"")) from e
