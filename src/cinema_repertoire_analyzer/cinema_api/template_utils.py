@@ -9,10 +9,10 @@ def fill_string_template(text: str, **kwargs) -> str:
         kwargs: Variables to format the string.
 
     Returns:
-        True if all variables are present, False otherwise.
+        The formatted string.
 
     Raises:
-        SettingsLoadError: If some variables are missing.
+        TemplateRenderError: If some variables are missing.
     """
     try:
         return str(text).format(**kwargs)

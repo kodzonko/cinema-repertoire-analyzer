@@ -72,6 +72,22 @@ def test_database_manager_raises_domain_error_when_engine_creation_fails(db_path
 
 
 @pytest.mark.unit
+def test_database_manager_raises_domain_error_when_schema_bootstrap_fails(db_path: Path) -> None:
+    engine = mock()
+    metadata = mock()
+    original_metadata = Base.metadata
+    Base.metadata = metadata
+    when(sqlalchemy).create_engine(f"sqlite:///{db_path}").thenReturn(engine)
+    when(metadata).create_all(engine).thenRaise(sqlalchemy.exc.SQLAlchemyError("boom"))
+
+    try:
+        with pytest.raises(DatabaseConnectionError):
+            DatabaseManager(db_path)
+    finally:
+        Base.metadata = original_metadata
+
+
+@pytest.mark.unit
 def test_database_manager_calls_create_all_on_init(db_path: Path) -> None:
     engine = mock()
     session_factory = mock()

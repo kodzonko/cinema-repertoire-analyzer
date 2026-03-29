@@ -91,6 +91,13 @@ def test_verify_api_key_returns_false_without_access_token() -> None:
 
 
 @pytest.mark.unit
+def test_verify_api_key_returns_false_when_request_fails(access_token: str) -> None:
+    client = TmdbClient(session=DummySession([requests.RequestException("boom")]))
+
+    assert client.verify_api_key(access_token) is False
+
+
+@pytest.mark.unit
 def test_fetch_movie_details_returns_response_body(access_token: str) -> None:
     session = DummySession([DummyResponse(payload={"results": [{"title": "Garfield"}]})])
     client = TmdbClient(session=session)

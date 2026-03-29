@@ -21,9 +21,12 @@ class TmdbClient:
         """Verify if the API key is set and valid."""
         if not access_token:
             return False
-        response = self._session.get(
-            AUTH_URL, headers=self._make_headers(access_token), timeout=REQUEST_TIMEOUT_SECONDS
-        )
+        try:
+            response = self._session.get(
+                AUTH_URL, headers=self._make_headers(access_token), timeout=REQUEST_TIMEOUT_SECONDS
+            )
+        except requests.RequestException:
+            return False
         return response.status_code == HTTPStatus.OK
 
     def fetch_movie_details(self, movie_name: str, access_token: str) -> dict:

@@ -19,14 +19,14 @@ class DatabaseManager:
 
     def __init__(self, db_file_path: Path | str) -> None:
         self._db_file_path = Path(db_file_path)
-        self._db_file_path.parent.mkdir(parents=True, exist_ok=True)
         sqlite_uri = f"sqlite:///{self._db_file_path}"
         try:
+            self._db_file_path.parent.mkdir(parents=True, exist_ok=True)
             engine = sqlalchemy.create_engine(sqlite_uri)
             Base.metadata.create_all(engine)
             self._session_constructor = sqlalchemy.orm.sessionmaker(engine)
             logger.debug(f"Connection to the database {sqlite_uri} successful.")
-        except Error as e:
+        except (Error, OSError, sqlalchemy.exc.SQLAlchemyError) as e:
             raise DatabaseConnectionError(
                 f"Nie udało się połączyć z bazą danych {sqlite_uri}. Spróbuj jeszcze raz."
             ) from e
