@@ -67,7 +67,9 @@ def multiple_results_response_body() -> dict[str, Any]:
 
 @pytest.mark.unit
 def test_verify_api_key_returns_true_for_successful_response(access_token: str) -> None:
-    client = tested_module.TmdbClient(session=DummySession([DummyResponse(status_code=HTTPStatus.OK)]))
+    client = tested_module.TmdbClient(
+        session=DummySession([DummyResponse(status_code=HTTPStatus.OK)])
+    )
 
     assert client.verify_api_key(access_token) is True
 

@@ -12,14 +12,14 @@ AUTH_URL = "https://api.themoviedb.org/3/authentication"
 SEARCH_URL = "https://api.themoviedb.org/3/search/movie?"
 
 
-class SupportsGet(Protocol):
+class _SupportsGet(Protocol):
     def get(self, url: str, headers: dict[str, str], timeout: float | int) -> Any: ...
 
 
 class TmdbClient:
     """Sync TMDB client used by the CLI."""
 
-    def __init__(self, session: SupportsGet | None = None) -> None:
+    def __init__(self, session: _SupportsGet | None = None) -> None:
         self._session = session
 
     def verify_api_key(self, access_token: str | None) -> bool:
@@ -37,9 +37,7 @@ class TmdbClient:
         url = SEARCH_URL + urlencode(self._make_search_params(movie_name), safe=":,")
         if self._session is not None:
             response = self._session.get(
-                url,
-                headers=self._make_headers(access_token),
-                timeout=REQUEST_TIMEOUT_SECONDS,
+                url, headers=self._make_headers(access_token), timeout=REQUEST_TIMEOUT_SECONDS
             )
         else:
             with httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS) as session:
@@ -73,14 +71,10 @@ class TmdbClient:
     def _get_authentication_response(self, access_token: str) -> httpx.Response | Any:
         if self._session is not None:
             return self._session.get(
-                AUTH_URL,
-                headers=self._make_headers(access_token),
-                timeout=REQUEST_TIMEOUT_SECONDS,
+                AUTH_URL, headers=self._make_headers(access_token), timeout=REQUEST_TIMEOUT_SECONDS
             )
         return httpx.get(
-            AUTH_URL,
-            headers=self._make_headers(access_token),
-            timeout=REQUEST_TIMEOUT_SECONDS,
+            AUTH_URL, headers=self._make_headers(access_token), timeout=REQUEST_TIMEOUT_SECONDS
         )
 
     def _make_headers(self, access_token: str) -> dict[str, str]:

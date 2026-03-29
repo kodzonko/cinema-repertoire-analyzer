@@ -93,8 +93,7 @@ def make_app(settings: Settings | None = None) -> typer.Typer:
                 )
 
             table_metadata = RepertoireCliTableMetadata(
-                repertoire_date=date_parsed,
-                cinema_venue_name=str(venue.venue_name),
+                repertoire_date=date_parsed, cinema_venue_name=str(venue.venue_name)
             )
             repertoire_to_cli(fetched_repertoire, table_metadata, ratings, console)
         except AppError as error:
