@@ -24,6 +24,7 @@ class DatabaseManager:
         try:
             self._db_file_path.parent.mkdir(parents=True, exist_ok=True)
             engine = sqlalchemy.create_engine(sqlite_uri)
+            self._engine = engine
             Base.metadata.create_all(engine)
             self._session_constructor = sqlalchemy.orm.sessionmaker(engine)
             logger.debug(f"Connection to the database {sqlite_uri} successful.")
@@ -31,6 +32,10 @@ class DatabaseManager:
             raise DatabaseConnectionError(
                 f"Nie udało się połączyć z bazą danych {sqlite_uri}. Spróbuj jeszcze raz."
             ) from e
+
+    def close(self) -> None:
+        """Dispose the underlying SQLAlchemy engine."""
+        self._engine.dispose()
 
     def get_all_venues(self) -> list[CinemaVenues]:
         """Get all venues for a specified cinema chain from the database."""

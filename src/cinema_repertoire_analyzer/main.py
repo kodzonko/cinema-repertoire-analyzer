@@ -60,6 +60,7 @@ def make_app(settings: Settings | None = None) -> typer.Typer:
     app = typer.Typer()
     app.add_typer(venues_app, name="venues")
     db_manager = _build_database_manager(settings.DB_FILE)
+    setattr(app, "_db_manager", db_manager)
     console = Console()
 
     @app.command()
