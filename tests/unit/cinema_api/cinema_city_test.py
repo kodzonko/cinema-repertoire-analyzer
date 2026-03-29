@@ -1,10 +1,14 @@
-import pytest
-from mockito import when
+from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+from bs4 import BeautifulSoup
+from bs4.element import NavigableString, Tag
 import cinema_repertoire_analyzer.cinema_api.cinema_city as tested_module
 from cinema_repertoire_analyzer.cinema_api.models import MoviePlayDetails, Repertoire
 from cinema_repertoire_analyzer.database.models import CinemaVenues
 from conftest import RESOURCE_DIR
+
+pytestmark = pytest.mark.anyio
 
 
 @pytest.fixture
@@ -24,14 +28,23 @@ def rendered_repertoire_html() -> str:
         return file.read()
 
 
+def _as_tag(html: str) -> Tag:
+    parsed_tag = BeautifulSoup(html, "lxml").find("div")
+    assert isinstance(parsed_tag, Tag)
+    return parsed_tag
+
+
 @pytest.mark.unit
-def test_fetch_repertoire_downloads_and_parses_repertoire_correctly(
-    cinema_city: tested_module.CinemaCity, rendered_repertoire_html: str
+async def test_fetch_repertoire_downloads_and_parses_repertoire_correctly(
+    cinema_city: tested_module.CinemaCity,
+    rendered_repertoire_html: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    when(cinema_city)._fetch_rendered_html(
-        "https://www.cinema-city.pl/#/buy-tickets-by-cinema?in-cinema=1097&at=2023-04-01",
-        tested_module.REPERTOIRE_SELECTOR,
-    ).thenReturn(rendered_repertoire_html)
+    monkeypatch.setattr(
+        cinema_city,
+        "_fetch_rendered_html",
+        AsyncMock(return_value=rendered_repertoire_html),
+    )
     expected = [
         Repertoire(
             title="65",
@@ -387,18 +400,15 @@ def test_fetch_repertoire_downloads_and_parses_repertoire_correctly(
         ),
     ]
 
-    assert (
-        cinema_city.fetch_repertoire(
-            date="2023-04-01",
-            venue_data=CinemaVenues(venue_id="1097", venue_name="Wrocław - Wroclavia"),
-        )
-        == expected
-    )
+    assert await cinema_city.fetch_repertoire(
+        date="2023-04-01",
+        venue_data=CinemaVenues(venue_id="1097", venue_name="Wrocław - Wroclavia"),
+    ) == expected
 
 
 @pytest.mark.unit
-def test_fetch_cinema_venues_list_downloads_and_parses_venues_correctly(
-    cinema_city: tested_module.CinemaCity,
+async def test_fetch_cinema_venues_list_downloads_and_parses_venues_correctly(
+    cinema_city: tested_module.CinemaCity, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     rendered_venues_html = """
     <select>
@@ -408,13 +418,194 @@ def test_fetch_cinema_venues_list_downloads_and_parses_venues_correctly(
       <option value="9999" data-tokens="null">Ignored</option>
     </select>
     """
-    when(cinema_city)._fetch_rendered_html(
-        "https://www.cinema-city.pl/#/buy-tickets-by-cinema", tested_module.CINEMA_VENUES_SELECTOR
-    ).thenReturn(rendered_venues_html)
+    monkeypatch.setattr(
+        cinema_city,
+        "_fetch_rendered_html",
+        AsyncMock(return_value=rendered_venues_html),
+    )
 
-    venues = cinema_city.fetch_cinema_venues_list()
+    venues = await cinema_city.fetch_cinema_venues_list()
 
     assert [(venue.venue_name, venue.venue_id) for venue in venues] == [
         ("Lodz - Manufaktura", "1080"),
         ("Wroclaw - Wroclavia", "1097"),
     ]
+
+
+@pytest.mark.unit
+async def test_fetch_repertoire_skips_movies_in_presale(
+    cinema_city: tested_module.CinemaCity, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rendered_html = """
+    <div class="row qb-movie">
+      <div class="qb-movie-info-column"><h4>Przedsprzedaz</h4></div>
+    </div>
+    <div class="row qb-movie">
+      <h3 class="qb-movie-name">Regular Movie</h3>
+      <div class="qb-movie-info-wrapper">
+        <span>Drama |Mystery</span>
+        <span>95 min</span>
+      </div>
+      <span aria-label="original-lang">EN</span>
+      <div class="qb-movie-info-column">
+        <ul class="qb-screening-attributes">
+          <span aria-label="Screening type">2D</span>
+        </ul>
+        <span aria-label="subAbbr">NAP</span>
+        <span aria-label="subbed-lang">PL</span>
+        <a class="btn btn-primary btn-lg">10:00</a>
+      </div>
+    </div>
+    """
+    monkeypatch.setattr(
+        cinema_city,
+        "_fetch_rendered_html",
+        AsyncMock(return_value=rendered_html),
+    )
+
+    repertoire = await cinema_city.fetch_repertoire(
+        date="2023-04-01",
+        venue_data=CinemaVenues(venue_id="1097", venue_name="Wroclaw - Wroclavia"),
+    )
+
+    assert [movie.title for movie in repertoire] == ["Regular Movie"]
+
+
+@pytest.mark.unit
+async def test_fetch_rendered_html_returns_page_source_after_waiting(
+    cinema_city: tested_module.CinemaCity,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = AsyncMock()
+    page.content.return_value = "<html>rendered</html>"
+    browser = AsyncMock()
+    browser.new_page.return_value = page
+    chromium = AsyncMock()
+    chromium.launch.return_value = browser
+    playwright = MagicMock()
+    playwright.chromium = chromium
+    playwright_context = AsyncMock()
+    playwright_context.__aenter__.return_value = playwright
+    playwright_context.__aexit__.return_value = None
+    monkeypatch.setattr(
+        tested_module,
+        "async_playwright",
+        MagicMock(return_value=playwright_context),
+    )
+
+    rendered_html = await cinema_city._fetch_rendered_html("https://example.com", "div.ready")
+
+    assert rendered_html == "<html>rendered</html>"
+    chromium.launch.assert_awaited_once_with(
+        headless=True,
+        args=["--disable-dev-shm-usage", "--disable-gpu", "--no-sandbox"],
+    )
+    browser.new_page.assert_awaited_once_with(viewport={"width": 1920, "height": 1080})
+    page.goto.assert_awaited_once_with(
+        "https://example.com",
+        wait_until="domcontentloaded",
+        timeout=tested_module.REQUEST_TIMEOUT_MILLISECONDS,
+    )
+    page.wait_for_selector.assert_awaited_once_with(
+        "div.ready",
+        state="attached",
+        timeout=tested_module.REQUEST_TIMEOUT_MILLISECONDS,
+    )
+    browser.close.assert_awaited_once()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("html", "expected"),
+    [
+        pytest.param("<div></div>", "N/A"),
+        pytest.param('<div><h3 class="qb-movie-name">Inception</h3></div>', "Inception"),
+    ],
+)
+def test_parse_title_handles_missing_and_present_titles(
+    cinema_city: tested_module.CinemaCity, html: str, expected: str
+) -> None:
+    assert cinema_city._parse_title(_as_tag(html)) == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("html", "expected"),
+    [
+        pytest.param("<div></div>", "N/A"),
+        pytest.param('<div><div class="qb-movie-info-wrapper"></div></div>', "N/A"),
+        pytest.param(
+            '<div><div class="qb-movie-info-wrapper"><span>Drama |Mystery</span></div></div>',
+            "Drama Mystery",
+        ),
+    ],
+)
+def test_parse_genres_handles_missing_and_present_values(
+    cinema_city: tested_module.CinemaCity, html: str, expected: str
+) -> None:
+    assert cinema_city._parse_genres(_as_tag(html)) == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("html", "expected"),
+    [
+        pytest.param("<div></div>", "N/A"),
+        pytest.param('<div><div class="qb-movie-info-wrapper"><span>soon</span></div></div>', "N/A"),
+        pytest.param(
+            '<div><div class="qb-movie-info-wrapper"><span>95 min</span></div></div>',
+            "95 min",
+        ),
+    ],
+)
+def test_parse_play_length_handles_missing_and_present_values(
+    cinema_city: tested_module.CinemaCity, html: str, expected: str
+) -> None:
+    assert cinema_city._parse_play_length(_as_tag(html)) == expected
+
+
+@pytest.mark.unit
+def test_parse_play_format_returns_na_when_section_is_missing(
+    cinema_city: tested_module.CinemaCity,
+) -> None:
+    assert cinema_city._parse_play_format(_as_tag("<div></div>")) == "N/A"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("html", "expected"),
+    [
+        pytest.param(
+            '<div><span aria-label="subbed-lang">PL</span></div>',
+            "N/A",
+        ),
+        pytest.param(
+            '<div><span aria-label="noSubs">ORG</span></div>',
+            "ORG",
+        ),
+        pytest.param(
+            '<div><span aria-label="subAbbr">NAP</span><span aria-label="subbed-lang">PL</span></div>',
+            "NAP: PL",
+        ),
+    ],
+)
+def test_parse_play_language_handles_missing_prefix_and_optional_language(
+    cinema_city: tested_module.CinemaCity, html: str, expected: str
+) -> None:
+    assert cinema_city._parse_play_language(_as_tag(html)) == expected
+
+
+@pytest.mark.unit
+def test_get_attr_text_handles_lists_navigable_strings_and_plain_strings(
+    cinema_city: tested_module.CinemaCity,
+) -> None:
+    list_holder = MagicMock()
+    list_holder.get.return_value = ["VIP", "2D"]
+    string_holder = MagicMock()
+    string_holder.get.return_value = NavigableString(" NAP ")
+    plain_holder = MagicMock()
+    plain_holder.get.return_value = " 1097 "
+
+    assert cinema_city._get_attr_text(list_holder, "data-tokens") == "VIP 2D"
+    assert cinema_city._get_attr_text(string_holder, "data-tokens") == "NAP"
+    assert cinema_city._get_attr_text(plain_holder, "data-tokens") == "1097"

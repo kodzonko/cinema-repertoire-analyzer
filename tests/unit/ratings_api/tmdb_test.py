@@ -1,15 +1,11 @@
 from http import HTTPStatus
 from typing import Any
 
+import httpx
 import pytest
-import requests
 
+import cinema_repertoire_analyzer.ratings_api.tmdb as tested_module
 from cinema_repertoire_analyzer.ratings_api.models import TmdbMovieDetails
-from cinema_repertoire_analyzer.ratings_api.tmdb import (
-    TmdbClient,
-    parse_movie_rating,
-    parse_movie_summary,
-)
 
 
 class DummyResponse:
@@ -28,7 +24,7 @@ class DummySession:
         self.responses = responses
         self.calls: list[dict[str, Any]] = []
 
-    def get(self, url: str, headers: dict[str, str], timeout: int) -> DummyResponse:
+    def get(self, url: str, headers: dict[str, str], timeout: float | int) -> DummyResponse:
         self.calls.append({"url": url, "headers": headers, "timeout": timeout})
         response = self.responses.pop(0)
         if isinstance(response, Exception):
@@ -71,36 +67,56 @@ def multiple_results_response_body() -> dict[str, Any]:
 
 @pytest.mark.unit
 def test_verify_api_key_returns_true_for_successful_response(access_token: str) -> None:
-    client = TmdbClient(session=DummySession([DummyResponse(status_code=HTTPStatus.OK)]))
+    client = tested_module.TmdbClient(session=DummySession([DummyResponse(status_code=HTTPStatus.OK)]))
 
     assert client.verify_api_key(access_token) is True
 
 
 @pytest.mark.unit
 def test_verify_api_key_returns_false_for_unsuccessful_response(access_token: str) -> None:
-    client = TmdbClient(session=DummySession([DummyResponse(status_code=HTTPStatus.UNAUTHORIZED)]))
+    client = tested_module.TmdbClient(
+        session=DummySession([DummyResponse(status_code=HTTPStatus.UNAUTHORIZED)])
+    )
 
     assert client.verify_api_key(access_token) is False
 
 
 @pytest.mark.unit
 def test_verify_api_key_returns_false_without_access_token() -> None:
-    client = TmdbClient(session=DummySession([]))
+    client = tested_module.TmdbClient(session=DummySession([]))
 
     assert client.verify_api_key(None) is False
 
 
 @pytest.mark.unit
 def test_verify_api_key_returns_false_when_request_fails(access_token: str) -> None:
-    client = TmdbClient(session=DummySession([requests.RequestException("boom")]))
+    request = httpx.Request("GET", tested_module.AUTH_URL)
+    client = tested_module.TmdbClient(
+        session=DummySession([httpx.ConnectError("boom", request=request)])
+    )
 
     assert client.verify_api_key(access_token) is False
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("response", "outcome"),
+    [
+        pytest.param("no_results_response_body", False),
+        pytest.param("single_result_response_body", True),
+        pytest.param("multiple_results_response_body", False),
+    ],
+)
+def test_ensure_single_result_returns_correct_bool_based_on_number_of_results(
+    response: str, outcome: bool, request: pytest.FixtureRequest
+) -> None:
+    assert tested_module.ensure_single_result(request.getfixturevalue(response)) is outcome
+
+
+@pytest.mark.unit
 def test_fetch_movie_details_returns_response_body(access_token: str) -> None:
     session = DummySession([DummyResponse(payload={"results": [{"title": "Garfield"}]})])
-    client = TmdbClient(session=session)
+    client = tested_module.TmdbClient(session=session)
 
     assert client.fetch_movie_details("Garfield", access_token) == {
         "results": [{"title": "Garfield"}]
@@ -110,13 +126,14 @@ def test_fetch_movie_details_returns_response_body(access_token: str) -> None:
 
 @pytest.mark.unit
 def test_fetch_all_movie_details_handles_request_failures(access_token: str) -> None:
+    request = httpx.Request("GET", tested_module.SEARCH_URL)
     session = DummySession(
         [
             DummyResponse(payload={"results": [{"title": "Garfield"}]}),
-            requests.RequestException("boom"),
+            httpx.ConnectError("boom", request=request),
         ]
     )
-    client = TmdbClient(session=session)
+    client = tested_module.TmdbClient(session=session)
 
     assert client.fetch_all_movie_details(["Garfield", "Hannibal"], access_token) == {
         "Garfield": {"results": [{"title": "Garfield"}]},
@@ -136,7 +153,7 @@ def test_fetch_all_movie_details_handles_request_failures(access_token: str) -> 
 def test_parse_movie_rating_parses_rating_correctly(
     response: str, outcome: str, request: pytest.FixtureRequest
 ) -> None:
-    assert parse_movie_rating(request.getfixturevalue(response)) == outcome
+    assert tested_module.parse_movie_rating(request.getfixturevalue(response)) == outcome
 
 
 @pytest.mark.unit
@@ -151,12 +168,22 @@ def test_parse_movie_rating_parses_rating_correctly(
 def test_parse_movie_summary_parses_summary_correctly(
     response: str, outcome: str, request: pytest.FixtureRequest
 ) -> None:
-    assert parse_movie_summary(request.getfixturevalue(response)) == outcome
+    assert tested_module.parse_movie_summary(request.getfixturevalue(response)) == outcome
+
+
+@pytest.mark.unit
+def test_parse_movie_rating_returns_default_for_malformed_payload() -> None:
+    assert tested_module.parse_movie_rating({"results": [{}]}) == "0.0/10"
+
+
+@pytest.mark.unit
+def test_parse_movie_summary_returns_default_for_malformed_payload() -> None:
+    assert tested_module.parse_movie_summary({"results": [{}]}) == "Brak opisu filmu."
 
 
 @pytest.mark.unit
 def test_get_movie_ratings_and_summaries_maps_results_to_models(access_token: str) -> None:
-    client = TmdbClient(
+    client = tested_module.TmdbClient(
         session=DummySession(
             [
                 DummyResponse(

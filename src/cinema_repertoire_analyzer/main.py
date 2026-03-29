@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import Annotated
 
+import anyio
 import typer
 from rich.console import Console
 
@@ -19,7 +20,10 @@ from cinema_repertoire_analyzer.exceptions import (
     AppError,
     VenueNotFoundError,
 )
-from cinema_repertoire_analyzer.ratings_api.tmdb import TmdbClient
+from cinema_repertoire_analyzer.ratings_api.tmdb import (
+    get_movie_ratings_and_summaries,
+    verify_api_key,
+)
 from cinema_repertoire_analyzer.settings import Settings, get_settings
 
 
@@ -55,9 +59,8 @@ def make_app(settings: Settings | None = None) -> typer.Typer:
     venues_app = typer.Typer()
     app = typer.Typer()
     app.add_typer(venues_app, name="venues")
-    console = Console()
-    tmdb_client = TmdbClient()
     db_manager = _build_database_manager(settings.DB_FILE)
+    console = Console()
 
     @app.command()
     def repertoire(
@@ -76,14 +79,12 @@ def make_app(settings: Settings | None = None) -> typer.Typer:
                 settings.CINEMA_CITY_SETTINGS.REPERTOIRE_URL,
                 settings.CINEMA_CITY_SETTINGS.VENUES_LIST_URL,
             )
-            fetched_repertoire = cinema_instance.fetch_repertoire(date_parsed, venue)
+            fetched_repertoire = anyio.run(cinema_instance.fetch_repertoire, date_parsed, venue)
             ratings = {}
             tmdb_access_token = settings.USER_PREFERENCES.TMDB_ACCESS_TOKEN
-            if tmdb_client.verify_api_key(tmdb_access_token) and tmdb_access_token:
+            if verify_api_key(tmdb_access_token) and tmdb_access_token:
                 movie_titles = [repertoire.title for repertoire in fetched_repertoire]
-                ratings = tmdb_client.get_movie_ratings_and_summaries(
-                    movie_titles, tmdb_access_token
-                )
+                ratings = get_movie_ratings_and_summaries(movie_titles, tmdb_access_token)
             else:
                 console.print(
                     "Klucz API do usługi TMDB nie jest skonfigurowany. "
@@ -92,7 +93,8 @@ def make_app(settings: Settings | None = None) -> typer.Typer:
                 )
 
             table_metadata = RepertoireCliTableMetadata(
-                repertoire_date=date_parsed, cinema_venue_name=str(venue.venue_name)
+                repertoire_date=date_parsed,
+                cinema_venue_name=str(venue.venue_name),
             )
             repertoire_to_cli(fetched_repertoire, table_metadata, ratings, console)
         except AppError as error:
@@ -110,7 +112,7 @@ def make_app(settings: Settings | None = None) -> typer.Typer:
             settings.CINEMA_CITY_SETTINGS.REPERTOIRE_URL,
             settings.CINEMA_CITY_SETTINGS.VENUES_LIST_URL,
         )
-        venues = cinema_instance.fetch_cinema_venues_list()
+        venues = anyio.run(cinema_instance.fetch_cinema_venues_list)
         db_manager.update_cinema_venues(venues)
         typer.echo("Lokale zaktualizowane w lokalnej bazie danych.")
 

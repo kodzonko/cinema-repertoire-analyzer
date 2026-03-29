@@ -53,7 +53,7 @@ def test_find_venues_by_name_returns_matching_venues(db_manager: DatabaseManager
         ]
     )
 
-    found_venues = db_manager.find_venues_by_name("%Warszawa%")
+    found_venues = db_manager.find_venues_by_name("Warszawa")
 
     assert [venue.venue_name for venue in found_venues] == [
         "Warszawa - Janki",
