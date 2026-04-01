@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use quick_repertoire::app::AppDependencies;
-use quick_repertoire::cinema::cinema_city::HtmlRenderer;
+use quick_repertoire::cinema::browser::{BrowserEvaluation, HtmlRenderer, RenderedPage};
 use quick_repertoire::cinema::registry::{CinemaChainClient, RegisteredCinemaChain, Registry};
 use quick_repertoire::config::{
     AppPaths, DefaultVenues, FileSystemRuntimeWriteAccessProbe, PromptAdapter,
@@ -20,12 +20,15 @@ use quick_repertoire::error::{AppError, AppResult};
 use quick_repertoire::tmdb::TmdbService;
 
 pub fn settings() -> Settings {
+    let mut default_venues = DefaultVenues::default();
+    default_venues.set(CinemaChainId::CinemaCity, Some("Wroclaw - Wroclavia".to_string()));
+
     Settings {
         user_preferences: UserPreferences {
             default_chain: CinemaChainId::CinemaCity,
             default_day: "dziś".to_string(),
             tmdb_access_token: Some("1234".to_string()),
-            default_venues: DefaultVenues { cinema_city: Some("Wroclaw - Wroclavia".to_string()) },
+            default_venues,
         },
     }
 }
@@ -234,16 +237,55 @@ fn dependencies_with_prompt_adapter_and_write_access_probe<P: PromptAdapter + 's
     tmdb_service: FakeTmdbService,
     runtime_write_access_probe: Box<dyn RuntimeWriteAccessProbe>,
 ) -> AppDependencies {
+    let chain = registered_chain(CinemaChainId::CinemaCity, "Cinema City", cinema_client);
+    dependencies_with_registry_and_write_access_probe(
+        runtime_dir,
+        prompt,
+        Registry::from_chains(vec![chain]),
+        tmdb_service,
+        runtime_write_access_probe,
+    )
+}
+
+pub fn dependencies_with_chains<P: PromptAdapter + 'static>(
+    runtime_dir: &Path,
+    prompt: P,
+    chains: Vec<RegisteredCinemaChain>,
+    tmdb_service: FakeTmdbService,
+) -> AppDependencies {
+    dependencies_with_registry_and_write_access_probe(
+        runtime_dir,
+        prompt,
+        Registry::from_chains(chains),
+        tmdb_service,
+        Box::new(FileSystemRuntimeWriteAccessProbe),
+    )
+}
+
+pub fn registered_chain(
+    chain_id: CinemaChainId,
+    display_name: &str,
+    cinema_client: FakeCinemaClient,
+) -> RegisteredCinemaChain {
     let factory_client = cinema_client.clone();
-    let chain = RegisteredCinemaChain {
-        chain_id: CinemaChainId::CinemaCity,
-        display_name: "Cinema City".to_string(),
+    RegisteredCinemaChain {
+        chain_id,
+        display_name: display_name.to_string(),
         client_factory: Arc::new(move |_| Box::new(factory_client.clone())),
-    };
+    }
+}
+
+fn dependencies_with_registry_and_write_access_probe<P: PromptAdapter + 'static>(
+    runtime_dir: &Path,
+    prompt: P,
+    registry: Registry,
+    tmdb_service: FakeTmdbService,
+    runtime_write_access_probe: Box<dyn RuntimeWriteAccessProbe>,
+) -> AppDependencies {
     AppDependencies {
         paths: AppPaths::for_runtime_dir(runtime_dir.to_path_buf()),
         prompt: Box::new(prompt),
-        registry: Registry::from_chains(vec![chain]),
+        registry,
         tmdb_client: Arc::new(tmdb_service),
         runtime_write_access_probe,
     }
@@ -258,5 +300,38 @@ pub struct FakeHtmlRenderer {
 impl HtmlRenderer for FakeHtmlRenderer {
     async fn render(&self, _url: &str, _wait_selector: &str) -> AppResult<String> {
         Ok(self.html.clone())
+    }
+}
+
+#[derive(Clone)]
+pub struct FakeRenderedPageRenderer {
+    pub html: String,
+    pub evaluations: HashMap<String, String>,
+}
+
+#[async_trait]
+impl HtmlRenderer for FakeRenderedPageRenderer {
+    async fn render(&self, _url: &str, _wait_selector: &str) -> AppResult<String> {
+        Ok(self.html.clone())
+    }
+
+    async fn render_with_evaluations(
+        &self,
+        _url: &str,
+        _wait_selector: &str,
+        evaluations: &[BrowserEvaluation],
+    ) -> AppResult<RenderedPage> {
+        let mut values = HashMap::new();
+        for evaluation in evaluations {
+            let value = self.evaluations.get(&evaluation.name).cloned().ok_or_else(|| {
+                AppError::BrowserUnavailable(format!(
+                    "Missing fake evaluation value for `{}`.",
+                    evaluation.name
+                ))
+            })?;
+            values.insert(evaluation.name.clone(), value);
+        }
+
+        Ok(RenderedPage { html: self.html.clone(), evaluations: values })
     }
 }

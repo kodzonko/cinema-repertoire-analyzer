@@ -1,34 +1,31 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, LazyLock};
-use std::time::Duration;
 
 use async_trait::async_trait;
-use chromiumoxide::Page;
-use chromiumoxide::browser::{Browser, BrowserConfig};
-use futures::StreamExt;
 use log::debug;
 use regex::Regex;
 use reqwest::Client;
-use scraper::{ElementRef, Html, Selector};
+use scraper::{ElementRef, Html};
 use serde::Deserialize;
-use tokio::time::{Instant, sleep};
 
+use crate::cinema::browser::{HtmlRenderer, render_html_with_retry};
+use crate::cinema::common::{
+    MISSING_DATA_LABEL, extract_json_array_assignment, extract_query_param, first_text,
+    fold_polish_character_to_ascii, normalize_lookup_text as common_normalize_lookup_text,
+    normalized_text, selector,
+};
 use crate::cinema::registry::CinemaChainClient;
 use crate::domain::{
-    CinemaChainId, CinemaVenue, MovieLookupMetadata, MoviePageFallbackDetails, MoviePlayDetails,
-    MoviePlayTime, Repertoire,
+    CinemaChainId, CinemaVenue, MovieLookupMetadata, MoviePlayDetails, MoviePlayTime, Repertoire,
 };
 use crate::error::{AppError, AppResult};
 use crate::logging::preview_for_log;
-use crate::retry::{RetryDirective, RetryPolicy, retry_with_backoff};
+use crate::retry::RetryPolicy;
 
-const REQUEST_TIMEOUT_SECONDS: u64 = 30;
-const HTML_POLL_INTERVAL_MILLIS: u64 = 250;
 const REPERTOIRE_PAGE_READY_SELECTOR: &str = "h2.mr-sm";
 const REPERTOIRE_SELECTOR: &str = "div.row.qb-movie";
 const CINEMA_VENUES_PAGE_READY_SELECTOR: &str = "body";
 const LEGACY_CINEMA_VENUES_SELECTOR: &str = "option[value][data-tokens]";
-const MISSING_DATA_LABEL: &str = "Brak danych";
 const DEFAULT_CINEMA_CITY_TENANT_ID: &str = "10103";
 const DEFAULT_CINEMA_CITY_QUICKBOOK_API_BASE_URL: &str =
     "https://www.cinema-city.pl/pl/data-api-service";
@@ -48,71 +45,6 @@ static TEMPLATE_RE: LazyLock<Regex> =
 static TENANT_ID_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"tenantId\s*=\s*"(?P<tenant_id>\d+)""#).expect("tenant id regex must compile")
 });
-
-#[async_trait]
-pub trait HtmlRenderer: Send + Sync {
-    async fn render(&self, url: &str, wait_selector: &str) -> AppResult<String>;
-}
-
-#[async_trait]
-trait RenderedHtmlSource: Send + Sync {
-    async fn content(&self) -> AppResult<String>;
-}
-
-#[async_trait]
-impl RenderedHtmlSource for Page {
-    async fn content(&self) -> AppResult<String> {
-        Page::content(self).await.map_err(|error| AppError::BrowserUnavailable(error.to_string()))
-    }
-}
-
-#[derive(Clone)]
-pub struct ChromiumHtmlRenderer;
-
-#[async_trait]
-impl HtmlRenderer for ChromiumHtmlRenderer {
-    async fn render(&self, url: &str, wait_selector: &str) -> AppResult<String> {
-        debug!(
-            "Cinema City Chromium render starting url={url} wait_selector={wait_selector} timeout_secs={REQUEST_TIMEOUT_SECONDS}"
-        );
-        let (mut browser, mut handler) = Browser::launch(
-            BrowserConfig::builder()
-                .request_timeout(Duration::from_secs(REQUEST_TIMEOUT_SECONDS))
-                .build()
-                .map_err(|error| AppError::BrowserUnavailable(error.to_string()))?,
-        )
-        .await
-        .map_err(|error| {
-            AppError::BrowserUnavailable(format!(
-                "Nie udało się uruchomić przeglądarki Chromium: {error}"
-            ))
-        })?;
-
-        let handler_task = tokio::spawn(async move {
-            while let Some(event) = handler.next().await {
-                let _ = event;
-            }
-        });
-
-        let page = browser
-            .new_page(url)
-            .await
-            .map_err(|error| AppError::BrowserUnavailable(error.to_string()))?;
-        debug!("Cinema City Chromium page opened url={url} wait_selector={wait_selector}");
-        let html = wait_for_selector_in_rendered_html(
-            &page,
-            url,
-            wait_selector,
-            Duration::from_secs(REQUEST_TIMEOUT_SECONDS),
-            Duration::from_millis(HTML_POLL_INTERVAL_MILLIS),
-        )
-        .await?;
-        debug!("Cinema City Chromium render completed url={url} html_bytes={}", html.len());
-        let _ = browser.close().await;
-        handler_task.abort();
-        Ok(html)
-    }
-}
 
 #[derive(Clone)]
 pub struct CinemaCity {
@@ -303,9 +235,7 @@ impl CinemaCity {
     ) -> MovieLookupMetadata {
         let movie_page_url = movie_page_url.map(str::to_string);
         MovieLookupMetadata {
-            cinema_city_film_id: movie_page_url
-                .as_deref()
-                .and_then(Self::extract_movie_id_from_url),
+            chain_movie_id: movie_page_url.as_deref().and_then(Self::extract_movie_id_from_url),
             movie_page_url,
             alternate_titles: Vec::new(),
             runtime_minutes: Self::parse_play_length_minutes(play_length),
@@ -333,7 +263,7 @@ impl CinemaCity {
     }
 
     fn normalize_language_code(language: &str) -> Option<String> {
-        let normalized = Self::normalize_lookup_text(language);
+        let normalized = common_normalize_lookup_text(language);
         let code =
             normalized.split_whitespace().find(|value| value.len() == 2 || value.len() == 3)?;
         Some(code.to_ascii_uppercase())
@@ -342,7 +272,7 @@ impl CinemaCity {
     fn normalize_genre_tags(genres: &str) -> Vec<String> {
         let mut tags = Vec::new();
         for raw_tag in genres.split([',', '|', '/']) {
-            let tag = Self::normalize_lookup_text(raw_tag);
+            let tag = common_normalize_lookup_text(raw_tag);
             if !tag.is_empty() && !tags.contains(&tag) {
                 tags.push(tag);
             }
@@ -351,21 +281,7 @@ impl CinemaCity {
     }
 
     fn normalize_lookup_text(value: &str) -> String {
-        let mut normalized = String::new();
-        let mut previous_was_separator = false;
-
-        for character in value.chars().map(fold_polish_character_to_ascii) {
-            let lowered = character.to_ascii_lowercase();
-            if lowered.is_ascii_alphanumeric() {
-                normalized.push(lowered);
-                previous_was_separator = false;
-            } else if !previous_was_separator {
-                normalized.push(' ');
-                previous_was_separator = true;
-            }
-        }
-
-        normalized.trim().to_string()
+        common_normalize_lookup_text(value)
     }
 
     fn is_non_genre_attribute(attribute_id: &str) -> bool {
@@ -404,7 +320,7 @@ impl CinemaCity {
         attribute_ids: &[String],
     ) -> Option<String> {
         attribute_ids.iter().find_map(|attribute_id| {
-            let normalized = Self::normalize_lookup_text(attribute_id);
+            let normalized = common_normalize_lookup_text(attribute_id);
             normalized
                 .strip_prefix("original lang ")
                 .or_else(|| normalized.strip_prefix("original language "))
@@ -415,7 +331,7 @@ impl CinemaCity {
     fn extract_genre_tags_from_attribute_ids(attribute_ids: &[String]) -> Vec<String> {
         let mut tags = Vec::new();
         for attribute_id in attribute_ids {
-            let normalized = Self::normalize_lookup_text(attribute_id);
+            let normalized = common_normalize_lookup_text(attribute_id);
             if normalized.is_empty() || Self::is_non_genre_attribute(&normalized) {
                 continue;
             }
@@ -434,8 +350,8 @@ impl CinemaCity {
     }
 
     fn merge_lookup_metadata(current: &mut MovieLookupMetadata, update: &MovieLookupMetadata) {
-        if update.cinema_city_film_id.is_some() {
-            current.cinema_city_film_id = update.cinema_city_film_id.clone();
+        if update.chain_movie_id.is_some() {
+            current.chain_movie_id = update.chain_movie_id.clone();
         }
         if update.movie_page_url.is_some() {
             current.movie_page_url = update.movie_page_url.clone();
@@ -460,11 +376,11 @@ impl CinemaCity {
 
     fn merge_alternate_titles(current: &mut Vec<String>, update: &[String]) {
         for title in update {
-            let normalized_update = Self::normalize_lookup_text(title);
+            let normalized_update = common_normalize_lookup_text(title);
             if normalized_update.is_empty()
                 || current
                     .iter()
-                    .any(|existing| Self::normalize_lookup_text(existing) == normalized_update)
+                    .any(|existing| common_normalize_lookup_text(existing) == normalized_update)
             {
                 continue;
             }
@@ -709,7 +625,7 @@ impl CinemaCity {
                     .into_iter()
                     .filter(|title| {
                         Self::normalize_lookup_text(title)
-                            != Self::normalize_lookup_text(&film.name)
+                            != common_normalize_lookup_text(&film.name)
                     })
                     .collect::<Vec<_>>();
                 (
@@ -717,7 +633,7 @@ impl CinemaCity {
                     BookableMovieMetadata {
                         title: film.name,
                         lookup_metadata: MovieLookupMetadata {
-                            cinema_city_film_id: Some(film_id),
+                            chain_movie_id: Some(film_id),
                             movie_page_url,
                             alternate_titles,
                             runtime_minutes: film.length,
@@ -873,11 +789,11 @@ impl CinemaCity {
             .await?;
         let base_titles_by_id = base_films
             .iter()
-            .map(|film| (film.id.as_str(), Self::normalize_lookup_text(&film.name)))
+            .map(|film| (film.id.as_str(), common_normalize_lookup_text(&film.name)))
             .collect::<HashMap<_, _>>();
         let mut alternate_titles_by_id = HashMap::<String, Vec<String>>::new();
         for film in payload.body.films {
-            let normalized_title = Self::normalize_lookup_text(&film.name);
+            let normalized_title = common_normalize_lookup_text(&film.name);
             if normalized_title.is_empty() {
                 continue;
             }
@@ -888,7 +804,7 @@ impl CinemaCity {
                 continue;
             }
             let entry = alternate_titles_by_id.entry(film.id).or_default();
-            if entry.iter().any(|title| Self::normalize_lookup_text(title) == normalized_title) {
+            if entry.iter().any(|title| common_normalize_lookup_text(title) == normalized_title) {
                 continue;
             }
             entry.push(film.name);
@@ -928,14 +844,7 @@ impl CinemaCity {
     }
 
     async fn render_with_retry(&self, url: &str, wait_selector: &str) -> AppResult<String> {
-        retry_with_backoff(self.retry_policy, |attempt| async move {
-            debug!("Cinema City render attempt={attempt} url={url} wait_selector={wait_selector}");
-            self.renderer
-                .render(url, wait_selector)
-                .await
-                .map_err(|error| classify_render_error(attempt, url, wait_selector, error))
-        })
-        .await
+        render_html_with_retry(self.renderer.as_ref(), self.retry_policy, url, wait_selector).await
     }
 }
 
@@ -1130,17 +1039,6 @@ struct CinemaCityCompositeBookingLink {
     block_online_sales: bool,
 }
 
-#[derive(Debug, Deserialize)]
-struct CinemaCityMoviePageDetails {
-    #[serde(rename = "originalName")]
-    original_name: Option<String>,
-    #[serde(rename = "releaseCountry")]
-    release_country: Option<String>,
-    cast: Option<String>,
-    directors: Option<String>,
-    synopsis: Option<String>,
-}
-
 #[derive(Debug, Clone)]
 struct BookableMovieMetadata {
     title: String,
@@ -1153,337 +1051,10 @@ struct QuickbookMovieEnrichment {
     showtimes: HashSet<String>,
 }
 
-pub fn parse_movie_page_fallback_details(
-    rendered_html: &str,
-) -> AppResult<MoviePageFallbackDetails> {
-    let Some(film_details_json) = extract_json_object_assignment(rendered_html, "filmDetails")
-    else {
-        debug!(
-            "Cinema City movie page did not include a filmDetails assignment; html_preview={}",
-            preview_for_log(rendered_html, MAX_LOG_BODY_PREVIEW_CHARS),
-        );
-        return Err(AppError::BrowserUnavailable(
-            "Nie udało się odczytać szczegółów filmu Cinema City z aktualnego formatu strony."
-                .to_string(),
-        ));
-    };
-
-    let details = serde_json::from_str::<CinemaCityMoviePageDetails>(film_details_json).map_err(
-        |error| {
-            debug!(
-                "Cinema City movie page filmDetails JSON parse failed error={error} payload_preview={}",
-                preview_for_log(film_details_json, MAX_LOG_BODY_PREVIEW_CHARS),
-            );
-            AppError::BrowserUnavailable(format!(
-                "Nie udało się odczytać szczegółów filmu Cinema City z aktualnego formatu strony: {error}"
-            ))
-        },
-    )?;
-
-    Ok(MoviePageFallbackDetails {
-        original_title: normalize_optional_text(details.original_name),
-        country: normalize_optional_text(details.release_country),
-        cast: split_people_list(details.cast.as_deref()),
-        directors: split_people_list(details.directors.as_deref()),
-        synopsis: normalize_optional_text(details.synopsis),
-    })
-}
-
-fn selector(value: &str) -> &'static Selector {
-    Box::leak(Box::new(Selector::parse(value).expect("selector must compile")))
-}
-
-fn extract_json_array_assignment<'a>(html: &'a str, variable_name: &str) -> Option<&'a str> {
-    extract_json_assignment(html, variable_name, '[', ']')
-}
-
-fn extract_json_object_assignment<'a>(html: &'a str, variable_name: &str) -> Option<&'a str> {
-    extract_json_assignment(html, variable_name, '{', '}')
-}
-
-fn extract_json_assignment<'a>(
-    html: &'a str,
-    variable_name: &str,
-    open_char: char,
-    close_char: char,
-) -> Option<&'a str> {
-    let start = html.find(&format!("{variable_name} = {open_char}"))?;
-    let json_start = start + html[start..].find(open_char)?;
-    let mut depth = 0;
-    let mut inside_string = false;
-    let mut escaped = false;
-
-    for (offset, character) in html[json_start..].char_indices() {
-        if inside_string {
-            match character {
-                '\\' if !escaped => escaped = true,
-                '"' if !escaped => inside_string = false,
-                _ => escaped = false,
-            }
-            continue;
-        }
-
-        match character {
-            '"' => inside_string = true,
-            character if character == open_char => depth += 1,
-            character if character == close_char => {
-                depth -= 1;
-                if depth == 0 {
-                    let json_end = json_start + offset + character.len_utf8();
-                    return Some(&html[json_start..json_end]);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    None
-}
-
-fn normalize_optional_text(value: Option<String>) -> Option<String> {
-    value.map(|value| value.trim().to_string()).filter(|value| !value.is_empty())
-}
-
-fn split_people_list(value: Option<&str>) -> Vec<String> {
-    value
-        .unwrap_or_default()
-        .split([',', ';'])
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-        .collect()
-}
-
-fn extract_query_param(url: &str, parameter_name: &str) -> Option<String> {
-    url.split(['?', '#', '&'])
-        .filter_map(|segment| segment.split_once('='))
-        .find(|(name, _)| *name == parameter_name)
-        .map(|(_, value)| value.to_string())
-        .filter(|value| !value.trim().is_empty())
-}
-
-fn first_text(element: &ElementRef<'_>, selector_value: &str) -> Option<String> {
-    element.select(selector(selector_value)).next().map(normalized_text)
-}
-
-fn normalized_text(element: ElementRef<'_>) -> String {
-    WHITESPACE_RE.replace_all(&element.text().collect::<String>(), " ").trim().to_string()
-}
-
-fn fold_polish_character_to_ascii(character: char) -> char {
-    match character {
-        'ą' => 'a',
-        'ć' => 'c',
-        'ę' => 'e',
-        'ł' => 'l',
-        'ń' => 'n',
-        'ó' => 'o',
-        'ś' => 's',
-        'ź' | 'ż' => 'z',
-        'Ą' => 'A',
-        'Ć' => 'C',
-        'Ę' => 'E',
-        'Ł' => 'L',
-        'Ń' => 'N',
-        'Ó' => 'O',
-        'Ś' => 'S',
-        'Ź' | 'Ż' => 'Z',
-        _ => character,
-    }
-}
-
-async fn wait_for_selector_in_rendered_html(
-    source: &dyn RenderedHtmlSource,
-    url: &str,
-    wait_selector: &str,
-    timeout: Duration,
-    poll_interval: Duration,
-) -> AppResult<String> {
-    let selector = Selector::parse(wait_selector).expect("wait selector must compile");
-    let deadline = Instant::now() + timeout;
-    let mut last_transient_error = None;
-    let mut is_first_attempt = true;
-    let mut poll_attempt = 0_usize;
-
-    loop {
-        poll_attempt += 1;
-        if !is_first_attempt && Instant::now() >= deadline {
-            debug!(
-                "Cinema City rendered HTML wait timed out url={url} wait_selector={wait_selector} attempts={poll_attempt} last_transient_error={last_transient_error:?}"
-            );
-            return Err(build_wait_timeout_error(
-                url,
-                wait_selector,
-                last_transient_error.as_ref(),
-            ));
-        }
-        is_first_attempt = false;
-
-        match source.content().await {
-            Ok(rendered_html) => {
-                if Html::parse_document(&rendered_html).select(&selector).next().is_some() {
-                    debug!(
-                        "Cinema City rendered HTML selector found url={url} wait_selector={wait_selector} attempts={poll_attempt} html_bytes={}",
-                        rendered_html.len(),
-                    );
-                    return Ok(rendered_html);
-                }
-            }
-            Err(error) if is_transient_browser_error(&error) => {
-                debug!(
-                    "Cinema City rendered HTML source returned a transient browser error url={url} wait_selector={wait_selector} attempts={poll_attempt} error={error}"
-                );
-                last_transient_error = Some(error);
-            }
-            Err(error) => return Err(error),
-        }
-
-        if Instant::now() >= deadline {
-            debug!(
-                "Cinema City rendered HTML wait timed out url={url} wait_selector={wait_selector} attempts={poll_attempt} last_transient_error={last_transient_error:?}"
-            );
-            return Err(build_wait_timeout_error(
-                url,
-                wait_selector,
-                last_transient_error.as_ref(),
-            ));
-        }
-
-        sleep(poll_interval).await;
-    }
-}
-
-fn is_transient_browser_error(error: &AppError) -> bool {
-    match error {
-        AppError::BrowserUnavailable(message) => {
-            message.contains("Could not find node with given id")
-                || message.contains("Cannot find context with specified id")
-                || message.contains("Execution context was destroyed")
-        }
-        _ => false,
-    }
-}
-
-fn build_wait_timeout_error(
-    url: &str,
-    wait_selector: &str,
-    last_transient_error: Option<&AppError>,
-) -> AppError {
-    let base_message = format!(
-        "Przekroczono limit czasu podczas oczekiwania na element `{wait_selector}` na stronie {url}."
-    );
-    match last_transient_error {
-        Some(error) => AppError::BrowserUnavailable(format!(
-            "{base_message} Ostatni błąd przeglądarki: {error}"
-        )),
-        None => AppError::BrowserUnavailable(base_message),
-    }
-}
-
-fn classify_render_error(
-    attempt: usize,
-    url: &str,
-    wait_selector: &str,
-    error: AppError,
-) -> RetryDirective<AppError> {
-    match error {
-        error @ AppError::BrowserUnavailable(_) => {
-            debug!(
-                "Cinema City render failed with a retryable browser error attempt={attempt} url={url} wait_selector={wait_selector} error={error}"
-            );
-            RetryDirective::retry(error)
-        }
-        error => {
-            debug!(
-                "Cinema City render failed with a non-retryable error attempt={attempt} url={url} wait_selector={wait_selector} error={error}"
-            );
-            RetryDirective::fail(error)
-        }
-    }
-}
-
 async fn response_body_preview(response: reqwest::Response) -> String {
     match response.text().await {
         Ok(body) if body.trim().is_empty() => "<empty>".to_string(),
         Ok(body) => preview_for_log(&body, MAX_LOG_BODY_PREVIEW_CHARS),
         Err(error) => format!("<unavailable: {error}>"),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::collections::VecDeque;
-    use std::sync::Mutex;
-
-    use super::*;
-
-    struct FakeRenderedHtmlSource {
-        responses: Mutex<VecDeque<AppResult<String>>>,
-    }
-
-    impl FakeRenderedHtmlSource {
-        fn new(responses: Vec<AppResult<String>>) -> Self {
-            Self { responses: Mutex::new(VecDeque::from(responses)) }
-        }
-    }
-
-    #[async_trait]
-    impl RenderedHtmlSource for FakeRenderedHtmlSource {
-        async fn content(&self) -> AppResult<String> {
-            self.responses
-                .lock()
-                .expect("rendered html responses lock poisoned")
-                .pop_front()
-                .expect("test response must be configured")
-        }
-    }
-
-    #[tokio::test]
-    async fn wait_for_selector_in_rendered_html_retries_transient_missing_node_errors() {
-        let source = FakeRenderedHtmlSource::new(vec![
-            Err(AppError::BrowserUnavailable(
-                "Error -32000: Could not find node with given id".to_string(),
-            )),
-            Ok("<html><body><div>loading...</div></body></html>".to_string()),
-            Ok("<html><body><div class=\"row qb-movie\">loaded</div></body></html>".to_string()),
-        ]);
-
-        let rendered_html = wait_for_selector_in_rendered_html(
-            &source,
-            "https://example.test/repertoire",
-            REPERTOIRE_SELECTOR,
-            Duration::from_millis(50),
-            Duration::from_millis(1),
-        )
-        .await
-        .expect("transient node lookup errors should be retried");
-
-        assert!(rendered_html.contains("qb-movie"));
-    }
-
-    #[tokio::test]
-    async fn wait_for_selector_in_rendered_html_times_out_when_selector_never_appears() {
-        let source = FakeRenderedHtmlSource::new(vec![
-            Ok("<html><body><div>loading...</div></body></html>".to_string()),
-            Ok("<html><body><div>still loading...</div></body></html>".to_string()),
-        ]);
-
-        let error = wait_for_selector_in_rendered_html(
-            &source,
-            "https://example.test/repertoire",
-            REPERTOIRE_SELECTOR,
-            Duration::from_millis(2),
-            Duration::from_millis(1),
-        )
-        .await
-        .expect_err("missing selector should time out");
-
-        assert_eq!(
-            error,
-            AppError::BrowserUnavailable(
-                "Przekroczono limit czasu podczas oczekiwania na element `div.row.qb-movie` na stronie https://example.test/repertoire."
-                    .to_string(),
-            )
-        );
     }
 }

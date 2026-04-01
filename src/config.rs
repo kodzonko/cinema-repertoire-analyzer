@@ -76,19 +76,22 @@ pub fn build_runtime_write_access_probe() -> Box<dyn RuntimeWriteAccessProbe> {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct DefaultVenues {
-    pub cinema_city: Option<String>,
+    venues_by_chain: HashMap<String, String>,
 }
 
 impl DefaultVenues {
     pub fn get(&self, chain_id: CinemaChainId) -> Option<&str> {
-        match chain_id {
-            CinemaChainId::CinemaCity => self.cinema_city.as_deref(),
-        }
+        self.venues_by_chain.get(chain_id.section_name()).map(String::as_str)
     }
 
     pub fn set(&mut self, chain_id: CinemaChainId, value: Option<String>) {
-        match chain_id {
-            CinemaChainId::CinemaCity => self.cinema_city = value,
+        match value {
+            Some(value) if !value.trim().is_empty() => {
+                self.venues_by_chain.insert(chain_id.section_name().to_string(), value);
+            }
+            _ => {
+                self.venues_by_chain.remove(chain_id.section_name());
+            }
         }
     }
 }
@@ -245,6 +248,18 @@ pub fn load_settings(paths: &AppPaths) -> AppResult<Settings> {
     let sections =
         parse_ini(&content).map_err(|_| AppError::configuration(configure_recovery_message()))?;
 
+    let mut default_venues = DefaultVenues::default();
+    for chain_id in CinemaChainId::all() {
+        default_venues.set(
+            *chain_id,
+            normalize_optional(
+                get_optional(&sections, "default_venues", chain_id.section_name())
+                    .unwrap_or_default()
+                    .as_str(),
+            ),
+        );
+    }
+
     Ok(Settings {
         user_preferences: UserPreferences {
             default_chain: CinemaChainId::from_value(
@@ -260,13 +275,7 @@ pub fn load_settings(paths: &AppPaths) -> AppResult<Settings> {
                     .unwrap_or_default()
                     .as_str(),
             ),
-            default_venues: DefaultVenues {
-                cinema_city: normalize_optional(
-                    get_optional(&sections, "default_venues", "cinema_city")
-                        .unwrap_or_default()
-                        .as_str(),
-                ),
-            },
+            default_venues,
         },
     })
 }
@@ -283,6 +292,17 @@ pub fn write_settings(settings: &Settings, paths: &AppPaths) -> AppResult<()> {
         fs::create_dir_all(parent).map_err(|error| AppError::configuration(error.to_string()))?;
     }
 
+    let default_venues_body = CinemaChainId::all()
+        .iter()
+        .map(|chain_id| {
+            format!(
+                "{} = {}\n",
+                chain_id.section_name(),
+                settings.user_preferences.default_venues.get(*chain_id).unwrap_or(""),
+            )
+        })
+        .collect::<String>();
+
     let config_body = format!(
         "[user_preferences]\n\
 default_chain = {}\n\
@@ -290,12 +310,12 @@ default_day = {}\n\
 tmdb_access_token = {}\n\
 \n\
 [default_venues]\n\
-cinema_city = {}\n\
+{}\
 \n",
         settings.user_preferences.default_chain.as_str(),
         settings.user_preferences.default_day,
         settings.user_preferences.tmdb_access_token.clone().unwrap_or_default(),
-        settings.user_preferences.default_venues.cinema_city.clone().unwrap_or_default(),
+        default_venues_body,
     );
 
     let temp_path = config_path.with_extension("tmp");

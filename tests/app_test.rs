@@ -8,14 +8,14 @@ use assert_cmd::Command;
 use quick_repertoire::app::run_with_args;
 use quick_repertoire::config::write_settings;
 use quick_repertoire::domain::{
-    CinemaVenue, MovieLookupMetadata, MoviePlayDetails, MoviePlayTime, Repertoire,
+    CinemaChainId, CinemaVenue, MovieLookupMetadata, MoviePlayDetails, MoviePlayTime, Repertoire,
 };
 use quick_repertoire::error::AppError;
 use quick_repertoire::output::BufferTerminal;
 use quick_repertoire::persistence::DatabaseManager;
 use support::{
     FailingWriteAccessProbe, FakeCinemaClient, FakePrompt, FakeTmdbService, dependencies,
-    dependencies_with_write_access_probe, settings,
+    dependencies_with_chains, dependencies_with_write_access_probe, registered_chain, settings,
 };
 use tempfile::tempdir;
 
@@ -170,6 +170,81 @@ async fn repertoire_command_warns_when_tmdb_is_disabled() {
 }
 
 #[tokio::test]
+async fn repertoire_command_supports_helios_chain() {
+    let temp_dir = tempdir().unwrap();
+    let dependencies = dependencies_with_chains(
+        temp_dir.path(),
+        FakePrompt::new(Vec::new(), Vec::new()),
+        vec![
+            registered_chain(
+                CinemaChainId::CinemaCity,
+                "Cinema City",
+                FakeCinemaClient::new(Vec::new(), Vec::new()),
+            ),
+            registered_chain(
+                CinemaChainId::Helios,
+                "Helios",
+                FakeCinemaClient::new(
+                    vec![Repertoire {
+                        title: "Helios Movie".to_string(),
+                        genres: "Dramat".to_string(),
+                        play_length: "101 min".to_string(),
+                        original_language: "Brak danych".to_string(),
+                        play_details: vec![MoviePlayDetails {
+                            format: "Dream 2D Atmos".to_string(),
+                            play_language: "Napisy".to_string(),
+                            play_times: vec![MoviePlayTime {
+                                value: "18:30".to_string(),
+                                url: Some("https://bilety.helios.pl/screen/test".to_string()),
+                            }],
+                        }],
+                        lookup_metadata: MovieLookupMetadata::default(),
+                    }],
+                    Vec::new(),
+                ),
+            ),
+        ],
+        FakeTmdbService { result: Default::default(), error: None },
+    );
+    let mut configured_settings = settings();
+    configured_settings
+        .user_preferences
+        .default_venues
+        .set(CinemaChainId::Helios, Some("Łódź - Helios".to_string()));
+    write_settings(&configured_settings, &dependencies.paths).unwrap();
+    DatabaseManager::new(dependencies.paths.db_file())
+        .unwrap()
+        .replace_venues(
+            "helios",
+            &[CinemaVenue {
+                chain_id: "helios".to_string(),
+                venue_name: "Łódź - Helios".to_string(),
+                venue_id: "lodz/kino-helios".to_string(),
+            }],
+        )
+        .unwrap();
+    let mut terminal = BufferTerminal::default();
+
+    let exit_code = run_with_args(
+        vec![
+            "quickrep".to_string(),
+            "repertoire".to_string(),
+            "--chain".to_string(),
+            "helios".to_string(),
+        ],
+        &dependencies,
+        &mut terminal,
+    )
+    .await;
+
+    let output = terminal.into_string();
+    assert_eq!(exit_code, 0);
+    assert!(output.contains("Repertuar dla Helios"));
+    assert!(output.contains("Łódź - Helios"));
+    assert!(output.contains("Helios Movie"));
+}
+
+#[tokio::test]
 async fn venues_update_updates_venues_correctly() {
     let temp_dir = tempdir().unwrap();
     let dependencies = dependencies(
@@ -209,6 +284,102 @@ async fn venues_update_updates_venues_correctly() {
             .collect::<Vec<_>>(),
         vec![("Test Venue".to_string(), "9999".to_string())]
     );
+}
+
+#[tokio::test]
+async fn venues_commands_support_helios_chain() {
+    let temp_dir = tempdir().unwrap();
+    let dependencies = dependencies_with_chains(
+        temp_dir.path(),
+        FakePrompt::new(Vec::new(), Vec::new()),
+        vec![
+            registered_chain(
+                CinemaChainId::CinemaCity,
+                "Cinema City",
+                FakeCinemaClient::new(Vec::new(), Vec::new()),
+            ),
+            registered_chain(
+                CinemaChainId::Helios,
+                "Helios",
+                FakeCinemaClient::new(
+                    Vec::new(),
+                    vec![
+                        CinemaVenue {
+                            chain_id: "helios".to_string(),
+                            venue_name: "Gdynia - Helios".to_string(),
+                            venue_id: "gdynia/kino-helios".to_string(),
+                        },
+                        CinemaVenue {
+                            chain_id: "helios".to_string(),
+                            venue_name: "Łódź - Helios".to_string(),
+                            venue_id: "lodz/kino-helios".to_string(),
+                        },
+                    ],
+                ),
+            ),
+        ],
+        FakeTmdbService { result: Default::default(), error: None },
+    );
+    let mut configured_settings = settings();
+    configured_settings
+        .user_preferences
+        .default_venues
+        .set(CinemaChainId::Helios, Some("Łódź - Helios".to_string()));
+    write_settings(&configured_settings, &dependencies.paths).unwrap();
+
+    let mut update_terminal = BufferTerminal::default();
+    let update_exit_code = run_with_args(
+        vec![
+            "quickrep".to_string(),
+            "venues".to_string(),
+            "update".to_string(),
+            "--chain".to_string(),
+            "helios".to_string(),
+        ],
+        &dependencies,
+        &mut update_terminal,
+    )
+    .await;
+    assert_eq!(update_exit_code, 0);
+    assert!(update_terminal.into_string().contains("Aktualizowanie lokali dla sieci: Helios..."));
+
+    let mut list_terminal = BufferTerminal::default();
+    let list_exit_code = run_with_args(
+        vec![
+            "quickrep".to_string(),
+            "venues".to_string(),
+            "list".to_string(),
+            "--chain".to_string(),
+            "helios".to_string(),
+        ],
+        &dependencies,
+        &mut list_terminal,
+    )
+    .await;
+    let list_output = list_terminal.into_string();
+    assert_eq!(list_exit_code, 0);
+    assert!(list_output.contains("Znalezione lokale sieci Helios"));
+    assert!(list_output.contains("Gdynia - Helios"));
+    assert!(list_output.contains("Łódź - Helios"));
+
+    let mut search_terminal = BufferTerminal::default();
+    let search_exit_code = run_with_args(
+        vec![
+            "quickrep".to_string(),
+            "venues".to_string(),
+            "search".to_string(),
+            "łódź".to_string(),
+            "--chain".to_string(),
+            "helios".to_string(),
+        ],
+        &dependencies,
+        &mut search_terminal,
+    )
+    .await;
+    let search_output = search_terminal.into_string();
+    assert_eq!(search_exit_code, 0);
+    assert!(search_output.contains("Łódź - Helios"));
+    assert!(!search_output.contains("Gdynia - Helios"));
 }
 
 #[tokio::test]
@@ -511,7 +682,10 @@ async fn repertoire_command_exits_when_default_venue_is_not_configured() {
         FakeTmdbService { result: Default::default(), error: None },
     );
     let mut configured_settings = settings();
-    configured_settings.user_preferences.default_venues.cinema_city = None;
+    configured_settings
+        .user_preferences
+        .default_venues
+        .set(quick_repertoire::domain::CinemaChainId::CinemaCity, None);
     write_settings(&configured_settings, &dependencies.paths).unwrap();
     let mut terminal = BufferTerminal::default();
 

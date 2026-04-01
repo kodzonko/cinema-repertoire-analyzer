@@ -5,7 +5,7 @@ use std::sync::Arc;
 use clap::{CommandFactory, Parser};
 use clap_complete::{Shell, generate};
 
-use crate::cinema::cinema_city::ChromiumHtmlRenderer;
+use crate::cinema::browser::ChromiumHtmlRenderer;
 use crate::cinema::registry::{RegisteredCinemaChain, Registry};
 use crate::cli::{Cli, Commands, VenueCommands};
 use crate::config::{
