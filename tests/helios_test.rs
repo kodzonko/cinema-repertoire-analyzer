@@ -222,3 +222,24 @@ async fn fetch_repertoire_handles_imax_and_missing_language_from_state() {
         vec!["Imax Test Original".to_string()]
     );
 }
+
+#[tokio::test]
+async fn fetch_repertoire_uses_configured_base_url_for_metadata_links() {
+    let custom_base_url = "https://mirror.helios.example";
+    let mut evaluations = HashMap::new();
+    evaluations.insert("repertoire".to_string(), fixture("lodz-repertoire-state.json"));
+    evaluations.insert("current_cinema".to_string(), fixture("lodz-current-cinema.json"));
+    let client = Helios::new(
+        custom_base_url,
+        DEFAULT_HELIOS_VENUES_URL,
+        Arc::new(FakeRenderedPageRenderer { html: fixture("lodz-repertoire.html"), evaluations }),
+    );
+
+    let repertoire = client.fetch_repertoire("2026-04-01", &lodz_venue()).await.unwrap();
+    let hopnieci = find_movie(&repertoire, "Hopnięci");
+
+    assert_eq!(
+        hopnieci.lookup_metadata.movie_page_url.as_deref(),
+        Some("https://mirror.helios.example/lodz/kino-helios/filmy/hopnieci-4172")
+    );
+}

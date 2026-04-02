@@ -58,10 +58,11 @@ impl Helios {
 
     fn parse_venues(rendered_html: &str) -> Vec<CinemaVenue> {
         let html = Html::parse_document(rendered_html);
+        let selector = selector(VENUE_LINK_SELECTOR);
         let mut seen_ids = HashSet::new();
         let mut venues = Vec::new();
 
-        for anchor in html.select(selector(VENUE_LINK_SELECTOR)) {
+        for anchor in html.select(selector.as_ref()) {
             let Some(href) = anchor.value().attr("href") else {
                 continue;
             };
@@ -87,6 +88,7 @@ impl Helios {
 
     fn parse_repertoire(
         date: &str,
+        base_url: &str,
         route_fragment: &str,
         repertoire_url: &str,
         repertoire_state: HeliosRepertoireState,
@@ -146,6 +148,7 @@ impl Helios {
                 lookup_metadata: build_lookup_metadata(
                     &display_source,
                     &lookup_source,
+                    base_url,
                     route_fragment,
                 ),
             });
@@ -243,6 +246,7 @@ impl CinemaChainClient for Helios {
 
         Ok(Self::parse_repertoire(
             date,
+            &self.base_url,
             &route_fragment,
             &format!("{}/{}/repertuar", self.base_url.trim_end_matches('/'), route_fragment),
             repertoire_state,
@@ -569,6 +573,7 @@ fn parse_required_json<T: for<'de> Deserialize<'de>>(
 fn build_lookup_metadata(
     display_source: &HeliosDisplaySource,
     lookup_source: &HeliosLookupSource,
+    base_url: &str,
     route_fragment: &str,
 ) -> MovieLookupMetadata {
     let mut alternate_titles = Vec::new();
@@ -582,6 +587,7 @@ fn build_lookup_metadata(
     MovieLookupMetadata {
         chain_movie_id: Some(lookup_source.source_id.clone()),
         movie_page_url: Some(build_item_page_url(
+            base_url,
             route_fragment,
             lookup_source.page_kind,
             &lookup_source.slug,
@@ -631,6 +637,7 @@ fn normalize_genre_tags(genres: &[String]) -> Vec<String> {
 }
 
 fn build_item_page_url(
+    base_url: &str,
     route_fragment: &str,
     page_kind: HeliosPageKind,
     slug: &str,
@@ -642,7 +649,7 @@ fn build_item_page_url(
     };
     format!(
         "{}/{}/{path_segment}/{}-{}",
-        DEFAULT_HELIOS_BASE_URL.trim_end_matches('/'),
+        base_url.trim_end_matches('/'),
         route_fragment.trim_matches('/'),
         slug,
         id,

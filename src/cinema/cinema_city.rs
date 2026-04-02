@@ -116,8 +116,9 @@ impl CinemaCity {
     }
 
     fn parse_original_language(movie: &ElementRef<'_>) -> String {
+        let selector = selector("span[aria-label]");
         movie
-            .select(selector("span[aria-label]"))
+            .select(selector.as_ref())
             .find(|element| {
                 element
                     .value()
@@ -129,16 +130,18 @@ impl CinemaCity {
     }
 
     fn parse_play_length(movie: &ElementRef<'_>) -> String {
+        let selector = selector("div.qb-movie-info-wrapper span");
         movie
-            .select(selector("div.qb-movie-info-wrapper span"))
+            .select(selector.as_ref())
             .map(normalized_text)
             .find(|text| PLAY_LENGTH_RE.is_match(text))
             .unwrap_or_else(|| MISSING_DATA_LABEL.to_string())
     }
 
     fn parse_play_format(play_detail: &ElementRef<'_>) -> String {
+        let selector = selector("ul.qb-screening-attributes span[aria-label]");
         let formats = play_detail
-            .select(selector("ul.qb-screening-attributes span[aria-label]"))
+            .select(selector.as_ref())
             .filter(|element| {
                 element
                     .value()
@@ -154,8 +157,9 @@ impl CinemaCity {
         play_detail: &ElementRef<'_>,
         movie_page_url: Option<&str>,
     ) -> Vec<MoviePlayTime> {
+        let selector = selector("a.btn.btn-primary.btn-lg");
         play_detail
-            .select(selector("a.btn.btn-primary.btn-lg"))
+            .select(selector.as_ref())
             .map(|play_time| MoviePlayTime {
                 value: normalized_text(play_time),
                 url: if Self::play_time_has_booking_hint(&play_time) {
@@ -168,8 +172,9 @@ impl CinemaCity {
     }
 
     fn parse_play_language(play_detail: &ElementRef<'_>) -> String {
+        let selector = selector("span[aria-label]");
         let prefix = play_detail
-            .select(selector("span[aria-label]"))
+            .select(selector.as_ref())
             .find(|element| {
                 element.value().attr("aria-label").is_some_and(|label| {
                     label.contains("subAbbr")
@@ -179,7 +184,7 @@ impl CinemaCity {
             })
             .map(normalized_text);
         let language = play_detail
-            .select(selector("span[aria-label]"))
+            .select(selector.as_ref())
             .find(|element| {
                 element.value().attr("aria-label").is_some_and(|label| {
                     label.contains("subbed-lang")
@@ -202,8 +207,9 @@ impl CinemaCity {
         movie: &ElementRef<'_>,
         booking_url: Option<&str>,
     ) -> Vec<MoviePlayDetails> {
+        let selector = selector("div.qb-movie-info-column");
         movie
-            .select(selector("div.qb-movie-info-column"))
+            .select(selector.as_ref())
             .map(|play_detail| MoviePlayDetails {
                 format: Self::parse_play_format(&play_detail),
                 play_language: Self::parse_play_language(&play_detail),
@@ -213,8 +219,9 @@ impl CinemaCity {
     }
 
     fn parse_movie_link_url(movie: &ElementRef<'_>) -> Option<String> {
+        let selector = selector("a.qb-movie-link[href]");
         movie
-            .select(selector("a.qb-movie-link[href]"))
+            .select(selector.as_ref())
             .find_map(|link| link.value().attr("href"))
             .and_then(Self::canonicalize_cinema_city_url)
     }
@@ -397,13 +404,15 @@ impl CinemaCity {
     }
 
     fn is_presale(movie: &ElementRef<'_>) -> bool {
+        let selector = selector("div.qb-movie-info-column h4");
         movie
-            .select(selector("div.qb-movie-info-column h4"))
+            .select(selector.as_ref())
             .any(|element| normalized_text(element).to_uppercase().contains("PRZEDSPRZED"))
     }
 
     fn parse_legacy_venues(html: &Html) -> Vec<CinemaVenue> {
-        html.select(selector(LEGACY_CINEMA_VENUES_SELECTOR))
+        let selector = selector(LEGACY_CINEMA_VENUES_SELECTOR);
+        html.select(selector.as_ref())
             .filter_map(|cinema| {
                 let venue_name = cinema.value().attr("data-tokens")?.trim().to_string();
                 let venue_id = cinema.value().attr("value")?.trim().to_string();
@@ -863,7 +872,8 @@ impl CinemaChainClient for CinemaCity {
         let rendered_html = self.render_with_retry(&url, REPERTOIRE_PAGE_READY_SELECTOR).await?;
         let mut repertoire = {
             let html = Html::parse_document(&rendered_html);
-            html.select(selector(REPERTOIRE_SELECTOR))
+            let selector = selector(REPERTOIRE_SELECTOR);
+            html.select(selector.as_ref())
                 .filter(|movie| !Self::is_presale(movie))
                 .map(|movie| {
                     let title = Self::parse_title(&movie);

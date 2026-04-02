@@ -1,4 +1,5 @@
-use std::sync::LazyLock;
+use std::collections::HashMap;
+use std::sync::{Arc, LazyLock, RwLock};
 
 use log::debug;
 use regex::Regex;
@@ -15,6 +16,8 @@ pub const MISSING_DATA_LABEL: &str = "Brak danych";
 
 static WHITESPACE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\s+").expect("whitespace regex must compile"));
+static SELECTOR_CACHE: LazyLock<RwLock<HashMap<String, Arc<Selector>>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
 
 #[derive(Debug, Deserialize)]
 struct EmbeddedMoviePageDetails {
@@ -27,12 +30,21 @@ struct EmbeddedMoviePageDetails {
     synopsis: Option<String>,
 }
 
-pub fn selector(value: &str) -> &'static Selector {
-    Box::leak(Box::new(Selector::parse(value).expect("selector must compile")))
+pub fn selector(value: &str) -> Arc<Selector> {
+    if let Some(cached) =
+        SELECTOR_CACHE.read().expect("selector cache read lock poisoned").get(value).cloned()
+    {
+        return cached;
+    }
+
+    let parsed = Arc::new(Selector::parse(value).expect("selector must compile"));
+    let mut cache = SELECTOR_CACHE.write().expect("selector cache write lock poisoned");
+    cache.entry(value.to_string()).or_insert_with(|| parsed.clone()).clone()
 }
 
 pub fn first_text(element: &ElementRef<'_>, selector_value: &str) -> Option<String> {
-    element.select(selector(selector_value)).next().map(normalized_text)
+    let selector = selector(selector_value);
+    element.select(selector.as_ref()).next().map(normalized_text)
 }
 
 pub fn normalized_text(element: ElementRef<'_>) -> String {
@@ -180,4 +192,19 @@ pub fn parse_movie_page_fallback_details(
         directors: split_people_list(details.directors.as_deref()),
         synopsis: normalize_optional_text(details.synopsis),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::selector;
+
+    #[test]
+    fn selector_reuses_cached_instance_for_identical_values() {
+        let first = selector("div.example");
+        let second = selector("div.example");
+
+        assert!(Arc::ptr_eq(&first, &second));
+    }
 }
