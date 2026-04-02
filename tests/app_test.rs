@@ -3,6 +3,8 @@ mod support;
 use std::collections::HashMap;
 use std::fs;
 use std::io;
+use std::sync::Arc;
+use std::time::Duration;
 
 use assert_cmd::Command;
 use quick_repertoire::app::run_with_args;
@@ -14,8 +16,9 @@ use quick_repertoire::error::AppError;
 use quick_repertoire::output::BufferTerminal;
 use quick_repertoire::persistence::DatabaseManager;
 use support::{
-    FailingWriteAccessProbe, FakeCinemaClient, FakePrompt, FakeTmdbService, dependencies,
-    dependencies_with_chains, dependencies_with_write_access_probe, registered_chain, settings,
+    ConcurrencyTracker, DelayedCinemaClient, FailingWriteAccessProbe, FakeCinemaClient, FakePrompt,
+    FakeTmdbService, delayed_registered_chain, dependencies, dependencies_with_chains,
+    dependencies_with_write_access_probe, registered_chain, settings,
 };
 use tempfile::tempdir;
 
@@ -245,19 +248,40 @@ async fn repertoire_command_supports_helios_chain() {
 }
 
 #[tokio::test]
-async fn venues_update_updates_venues_correctly() {
+async fn venues_update_without_chain_refreshes_all_supported_chains_concurrently() {
     let temp_dir = tempdir().unwrap();
-    let dependencies = dependencies(
+    let tracker = Arc::new(ConcurrencyTracker::default());
+    let dependencies = dependencies_with_chains(
         temp_dir.path(),
         FakePrompt::new(Vec::new(), Vec::new()),
-        FakeCinemaClient::new(
-            Vec::new(),
-            vec![CinemaVenue {
-                chain_id: "cinema-city".to_string(),
-                venue_name: "Test Venue".to_string(),
-                venue_id: "9999".to_string(),
-            }],
-        ),
+        vec![
+            delayed_registered_chain(
+                CinemaChainId::CinemaCity,
+                "Cinema City",
+                DelayedCinemaClient {
+                    venues: vec![CinemaVenue {
+                        chain_id: "cinema-city".to_string(),
+                        venue_name: "Test Venue".to_string(),
+                        venue_id: "9999".to_string(),
+                    }],
+                    delay: Duration::from_millis(75),
+                    tracker: tracker.clone(),
+                },
+            ),
+            delayed_registered_chain(
+                CinemaChainId::Helios,
+                "Helios",
+                DelayedCinemaClient {
+                    venues: vec![CinemaVenue {
+                        chain_id: "helios".to_string(),
+                        venue_name: "Łódź - Helios".to_string(),
+                        venue_id: "lodz/kino-helios".to_string(),
+                    }],
+                    delay: Duration::from_millis(75),
+                    tracker: tracker.clone(),
+                },
+            ),
+        ],
         FakeTmdbService { result: Default::default(), error: None },
     );
     write_settings(&settings(), &dependencies.paths).unwrap();
@@ -272,8 +296,11 @@ async fn venues_update_updates_venues_correctly() {
 
     assert_eq!(exit_code, 0);
     let output = terminal.into_string();
-    assert!(output.contains("Aktualizowanie lokali dla sieci: Cinema City..."));
-    assert!(output.contains("Lokale zaktualizowane w lokalnej bazie danych."));
+    assert!(output.contains("Aktualizowanie lokali dla wszystkich obsługiwanych sieci..."));
+    assert!(output.contains(
+        "Lokale wszystkich obsługiwanych sieci zostały zaktualizowane w lokalnej bazie danych."
+    ));
+    assert_eq!(tracker.max_in_flight(), 2);
     assert_eq!(
         DatabaseManager::new(dependencies.paths.db_file())
             .unwrap()
@@ -283,6 +310,16 @@ async fn venues_update_updates_venues_correctly() {
             .map(|venue| (venue.venue_name, venue.venue_id))
             .collect::<Vec<_>>(),
         vec![("Test Venue".to_string(), "9999".to_string())]
+    );
+    assert_eq!(
+        DatabaseManager::new(dependencies.paths.db_file())
+            .unwrap()
+            .get_all_venues("helios")
+            .unwrap()
+            .into_iter()
+            .map(|venue| (venue.venue_name, venue.venue_id))
+            .collect::<Vec<_>>(),
+        vec![("Łódź - Helios".to_string(), "lodz/kino-helios".to_string())]
     );
 }
 

@@ -3,7 +3,9 @@
 use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use quick_repertoire::app::AppDependencies;
@@ -18,6 +20,7 @@ use quick_repertoire::domain::{
 };
 use quick_repertoire::error::{AppError, AppResult};
 use quick_repertoire::tmdb::TmdbService;
+use tokio::time::sleep;
 
 pub fn settings() -> Settings {
     let mut default_venues = DefaultVenues::default();
@@ -266,6 +269,71 @@ pub fn registered_chain(
     chain_id: CinemaChainId,
     display_name: &str,
     cinema_client: FakeCinemaClient,
+) -> RegisteredCinemaChain {
+    let factory_client = cinema_client.clone();
+    RegisteredCinemaChain {
+        chain_id,
+        display_name: display_name.to_string(),
+        client_factory: Arc::new(move |_| Box::new(factory_client.clone())),
+    }
+}
+
+#[derive(Default)]
+pub struct ConcurrencyTracker {
+    in_flight: AtomicUsize,
+    max_in_flight: AtomicUsize,
+}
+
+impl ConcurrencyTracker {
+    pub fn max_in_flight(&self) -> usize {
+        self.max_in_flight.load(Ordering::SeqCst)
+    }
+
+    fn enter(&self) -> ConcurrencyTrackerGuard<'_> {
+        let current = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+        self.max_in_flight.fetch_max(current, Ordering::SeqCst);
+        ConcurrencyTrackerGuard { tracker: self }
+    }
+}
+
+struct ConcurrencyTrackerGuard<'a> {
+    tracker: &'a ConcurrencyTracker,
+}
+
+impl Drop for ConcurrencyTrackerGuard<'_> {
+    fn drop(&mut self) {
+        self.tracker.in_flight.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+#[derive(Clone)]
+pub struct DelayedCinemaClient {
+    pub venues: Vec<CinemaVenue>,
+    pub delay: Duration,
+    pub tracker: Arc<ConcurrencyTracker>,
+}
+
+#[async_trait]
+impl CinemaChainClient for DelayedCinemaClient {
+    async fn fetch_repertoire(
+        &self,
+        _date: &str,
+        _venue: &CinemaVenue,
+    ) -> AppResult<Vec<Repertoire>> {
+        Ok(Vec::new())
+    }
+
+    async fn fetch_venues(&self) -> AppResult<Vec<CinemaVenue>> {
+        let _guard = self.tracker.enter();
+        sleep(self.delay).await;
+        Ok(self.venues.clone())
+    }
+}
+
+pub fn delayed_registered_chain(
+    chain_id: CinemaChainId,
+    display_name: &str,
+    cinema_client: DelayedCinemaClient,
 ) -> RegisteredCinemaChain {
     let factory_client = cinema_client.clone();
     RegisteredCinemaChain {

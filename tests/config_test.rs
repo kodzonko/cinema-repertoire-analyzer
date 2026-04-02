@@ -1,6 +1,8 @@
 mod support;
 
 use std::fs;
+use std::sync::Arc;
+use std::time::Duration;
 
 use quick_repertoire::config::{
     AppPaths, DEFAULT_DEVELOPMENT_LOG_LEVEL, DEFAULT_PRODUCTION_LOG_LEVEL, default_log_level,
@@ -11,8 +13,9 @@ use quick_repertoire::domain::{CinemaChainId, CinemaVenue};
 use quick_repertoire::error::AppError;
 use quick_repertoire::persistence::DatabaseManager;
 use support::{
-    AcceptDefaultsPrompt, FakeCinemaClient, FakePrompt, FakeTmdbService, dependencies,
-    dependencies_with_chains, dependencies_with_prompt_adapter, registered_chain, settings,
+    AcceptDefaultsPrompt, ConcurrencyTracker, DelayedCinemaClient, FakeCinemaClient, FakePrompt,
+    FakeTmdbService, delayed_registered_chain, dependencies, dependencies_with_chains,
+    dependencies_with_prompt_adapter, registered_chain, settings,
 };
 use tempfile::tempdir;
 
@@ -277,6 +280,70 @@ async fn run_interactive_configuration_preserves_existing_default_venue_for_othe
             ("Gdynia - Helios".to_string(), "gdynia/kino-helios".to_string()),
             ("Łódź - Helios".to_string(), "lodz/kino-helios".to_string())
         ]
+    );
+}
+
+#[tokio::test]
+async fn run_interactive_configuration_fetches_all_chain_venues_concurrently() {
+    let temp_dir = tempdir().unwrap();
+    let tracker = Arc::new(ConcurrencyTracker::default());
+    let dependencies = dependencies_with_chains(
+        temp_dir.path(),
+        AcceptDefaultsPrompt::new(Vec::new(), Vec::new()),
+        vec![
+            delayed_registered_chain(
+                CinemaChainId::CinemaCity,
+                "Cinema City",
+                DelayedCinemaClient {
+                    venues: vec![CinemaVenue {
+                        chain_id: "cinema-city".to_string(),
+                        venue_name: "Wroclaw - Wroclavia".to_string(),
+                        venue_id: "3".to_string(),
+                    }],
+                    delay: Duration::from_millis(75),
+                    tracker: tracker.clone(),
+                },
+            ),
+            delayed_registered_chain(
+                CinemaChainId::Helios,
+                "Helios",
+                DelayedCinemaClient {
+                    venues: vec![CinemaVenue {
+                        chain_id: "helios".to_string(),
+                        venue_name: "Łódź - Helios".to_string(),
+                        venue_id: "lodz/kino-helios".to_string(),
+                    }],
+                    delay: Duration::from_millis(75),
+                    tracker: tracker.clone(),
+                },
+            ),
+        ],
+        FakeTmdbService { result: Default::default(), error: None },
+    );
+
+    let configured_settings = run_interactive_configuration(
+        &dependencies.paths,
+        None,
+        &dependencies.registry,
+        dependencies.prompt.as_ref(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(tracker.max_in_flight(), 2);
+    assert_eq!(
+        configured_settings.get_default_venue(CinemaChainId::CinemaCity),
+        Some("Wroclaw - Wroclavia")
+    );
+    assert_eq!(
+        DatabaseManager::new(dependencies.paths.db_file())
+            .unwrap()
+            .get_all_venues("helios")
+            .unwrap()
+            .into_iter()
+            .map(|venue| (venue.venue_name, venue.venue_id))
+            .collect::<Vec<_>>(),
+        vec![("Łódź - Helios".to_string(), "lodz/kino-helios".to_string())]
     );
 }
 

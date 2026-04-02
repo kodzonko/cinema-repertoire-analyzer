@@ -63,8 +63,10 @@ Aby uruchomić kreator ponownie:
 ./target/release/quickrep venues search manufaktura
 ```
 
-Polecenia nadal przyjmują jawne `--chain`, ale gdy go pominiesz, aplikacja użyje
-domyślnej sieci z `config.ini`.
+Polecenia nadal przyjmują jawne `--chain`. Gdy pominiesz go w `repertoire`,
+`venues list` albo `venues search`, aplikacja użyje domyślnej sieci z `config.ini`.
+`venues update` bez `--chain` odświeża równolegle wszystkie obsługiwane sieci,
+pokazując spinner dla każdej z nich oraz zbiorczy pasek postępu.
 
 ## Testy i jakość
 
