@@ -5,6 +5,9 @@ use regex::Regex;
 
 const RELEASE_WORKFLOW_PATH: &str = ".github/workflows/release.yml";
 const LINT_TEST_WORKFLOW_PATH: &str = ".github/workflows/lint-test.yml";
+const CLAUDE_WORKFLOW_PATH: &str = ".github/workflows/claude.yml";
+const CLAUDE_REVIEW_WORKFLOW_PATH: &str = ".github/workflows/claude-code-review.yml";
+const CLAUDE_ALLOWED_LOGIN: &str = "kodzonko";
 
 fn package_binary_name(manifest: &str) -> String {
     let binary_name_pattern = Regex::new(r#"(?ms)\[\[bin\]\].*?^name = "([^"]+)""#).unwrap();
@@ -94,5 +97,28 @@ fn release_workflow_publishes_without_git_checkout_context() {
             r#"gh release create "${RELEASE_TAG}" "${assets[@]}" --repo "${GITHUB_REPOSITORY}" --target "${RELEASE_TARGET}" --generate-notes"#
         ),
         "release.yml should scope `gh release create` to GITHUB_REPOSITORY"
+    );
+}
+
+#[test]
+fn claude_workflow_only_allows_the_configured_login_to_trigger_mentions() {
+    let workflow = fs::read_to_string(CLAUDE_WORKFLOW_PATH).unwrap();
+    let allowed_login_guard = format!("github.event.sender.login == '{CLAUDE_ALLOWED_LOGIN}'");
+
+    assert!(
+        workflow.contains(&allowed_login_guard),
+        "claude.yml should restrict Claude mentions to `{CLAUDE_ALLOWED_LOGIN}`"
+    );
+}
+
+#[test]
+fn claude_review_workflow_only_runs_for_the_configured_pr_author() {
+    let workflow = fs::read_to_string(CLAUDE_REVIEW_WORKFLOW_PATH).unwrap();
+    let allowed_login_guard =
+        format!("github.event.pull_request.user.login == '{CLAUDE_ALLOWED_LOGIN}'");
+
+    assert!(
+        workflow.contains(&allowed_login_guard),
+        "claude-code-review.yml should restrict PR reviews to `{CLAUDE_ALLOWED_LOGIN}`"
     );
 }
