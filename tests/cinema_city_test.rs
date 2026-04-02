@@ -3,7 +3,7 @@ mod support;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use httpmock::Method::GET;
@@ -148,6 +148,31 @@ fn rendered_repertoire_html_with_translated_movie_link() -> String {
           <li><span aria-label="subbed-lang">PL</span></li>
         </ul>
         <a class="btn btn-primary btn-lg" ng-click="buy()">17:30</a>
+      </div>
+    </div>
+    "#
+    .to_string()
+}
+
+fn rendered_repertoire_html_with_fallback_schedule_date() -> String {
+    r#"
+    <h2 class="mr-sm">Repertuar Cinema City Wroclaw - Wroclavia</h2>
+    <div class="row qb-movie">
+      <a class="qb-movie-link" href="https://www.cinema-city.pl/filmy/projekt-hail-mary/7449s2r#/buy-tickets-by-film?in-cinema=1097&at=2026-04-01&for-movie=7449s2r&view-mode=list">
+        <h3 class="qb-movie-name">Projekt Hail Mary</h3>
+      </a>
+      <div class="qb-movie-info-wrapper">
+        <span>| Dramat, Sci-Fi, Thriller |</span>
+        <span>156 min</span>
+        <span aria-label="original-lang">EN</span>
+      </div>
+      <div class="qb-movie-info-column">
+        <ul class="qb-screening-attributes">
+          <li><span aria-label="Screening type">IMAX</span></li>
+          <li><span aria-label="subAbbr">FILM Z NAPISAMI</span></li>
+          <li><span aria-label="subbed-lang">PL</span></li>
+        </ul>
+        <a class="btn btn-primary btn-lg" ng-click="buy()">18:10</a>
       </div>
     </div>
     "#
@@ -309,6 +334,27 @@ async fn fetch_repertoire_parses_current_language_markup_from_live_schedule_page
             play_times: vec![MoviePlayTime { value: "21:40".to_string(), url: None }],
         }]
     );
+}
+
+#[tokio::test]
+async fn fetch_repertoire_ignores_rows_when_rendered_booking_date_differs_from_request() {
+    let cinema = CinemaCity::new(
+        "https://www.cinema-city.pl/kina/{cinema_venue_slug}/{cinema_venue_id}#/buy-tickets-by-cinema?in-cinema={cinema_venue_id}&at={repertoire_date}&view-mode=list".to_string(),
+        "https://www.cinema-city.pl/#/buy-tickets-by-cinema".to_string(),
+        Arc::new(FakeHtmlRenderer {
+            html: rendered_repertoire_html_with_fallback_schedule_date(),
+        }),
+    )
+    .with_quickbook_api_base_url("");
+    let venue_data = CinemaVenue {
+        chain_id: "cinema-city".to_string(),
+        venue_id: "1097".to_string(),
+        venue_name: "Wroclaw - Wroclavia".to_string(),
+    };
+
+    let repertoire = cinema.fetch_repertoire("2047-12-21", &venue_data).await.unwrap();
+
+    assert!(repertoire.is_empty());
 }
 
 #[tokio::test]
@@ -533,6 +579,99 @@ async fn fetch_repertoire_merges_alternate_titles_from_secondary_quickbook_langu
     primary_mock.assert_async().await;
     alternate_mock.assert_async().await;
     assert_eq!(repertoire[0].lookup_metadata.alternate_titles, vec!["The Last Supper".to_string()]);
+}
+
+#[tokio::test]
+async fn fetch_repertoire_overlaps_primary_and_alternate_quickbook_requests() {
+    let server = MockServer::start_async().await;
+    let request_delay = Duration::from_millis(350);
+    let primary_mock = server
+        .mock_async(|when, then| {
+            when.method(GET)
+                .path("/pl/data-api-service/v1/quickbook/10103/film-events/in-cinema/1097/at-date/2026-04-01")
+                .query_param("attr", "")
+                .query_param("lang", "pl_PL");
+            then.status(200).delay(request_delay).header("content-type", "application/json").body(
+                r#"{
+                  "body": {
+                    "films": [
+                      {
+                        "id": "8072s2r",
+                        "name": "Ostatnia wieczerza",
+                        "link": "https://www.cinema-city.pl/filmy/ostatnia-wieczerza/8072s2r",
+                        "length": 94,
+                        "releaseYear": "2025",
+                        "releaseDate": "2026-03-20T00:00:00",
+                        "attributeIds": ["original-lang-en", "drama"]
+                      }
+                    ],
+                    "events": [
+                      {
+                        "filmId": "8072s2r",
+                        "eventDateTime": "2026-04-01T17:30:00",
+                        "bookingLink": "https://tickets.cinema-city.pl/api/order/123?lang=pl",
+                        "soldOut": false,
+                        "compositeBookingLink": {
+                          "blockOnlineSales": false
+                        }
+                      }
+                    ]
+                  }
+                }"#,
+            );
+        })
+        .await;
+    let alternate_mock = server
+        .mock_async(|when, then| {
+            when.method(GET)
+                .path("/pl/data-api-service/v1/quickbook/10103/film-events/in-cinema/1097/at-date/2026-04-01")
+                .query_param("attr", "")
+                .query_param("lang", "en_GB");
+            then.status(200).delay(request_delay).header("content-type", "application/json").body(
+                r#"{
+                  "body": {
+                    "films": [
+                      {
+                        "id": "8072s2r",
+                        "name": "The Last Supper",
+                        "link": "https://www.cinema-city.pl/filmy/ostatnia-wieczerza/8072s2r",
+                        "length": 94,
+                        "releaseYear": "2025",
+                        "releaseDate": "2026-03-20T00:00:00",
+                        "attributeIds": ["original-lang-en", "drama"]
+                      }
+                    ],
+                    "events": []
+                  }
+                }"#,
+            );
+        })
+        .await;
+    let cinema = CinemaCity::new(
+        "https://www.cinema-city.pl/kina/{cinema_venue_slug}/{cinema_venue_id}#/buy-tickets-by-cinema?in-cinema={cinema_venue_id}&at={repertoire_date}&view-mode=list".to_string(),
+        "https://www.cinema-city.pl/#/buy-tickets-by-cinema".to_string(),
+        Arc::new(FakeHtmlRenderer {
+            html: rendered_repertoire_html_with_translated_movie_link(),
+        }),
+    )
+    .with_quickbook_api_base_url(server.url("/pl/data-api-service"));
+    let venue_data = CinemaVenue {
+        chain_id: "cinema-city".to_string(),
+        venue_id: "1097".to_string(),
+        venue_name: "Wroclaw - Wroclavia".to_string(),
+    };
+
+    let started_at = Instant::now();
+    let repertoire = cinema.fetch_repertoire("2026-04-01", &venue_data).await.unwrap();
+    let elapsed = started_at.elapsed();
+
+    primary_mock.assert_async().await;
+    alternate_mock.assert_async().await;
+    assert_eq!(repertoire[0].lookup_metadata.alternate_titles, vec!["The Last Supper".to_string()]);
+    assert!(
+        elapsed < Duration::from_millis(650),
+        "Quickbook requests should overlap, but took {elapsed:?}",
+    );
 }
 
 #[tokio::test]
