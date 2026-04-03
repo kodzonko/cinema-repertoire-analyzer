@@ -11,8 +11,8 @@ use crate::domain::{
     CinemaChainId, CinemaVenue, MovieLookupMetadata, MoviePlayDetails, MoviePlayTime, Repertoire,
 };
 use crate::error::{AppError, AppResult};
-use crate::logging::preview_for_log;
-use crate::retry::{RetryDirective, RetryPolicy, retry_with_backoff};
+use crate::logging::{preview_for_log, response_body_preview};
+use crate::retry::{RetryDirective, RetryPolicy, retry_after_delay, retry_with_backoff};
 
 pub const DEFAULT_MULTIKINO_BASE_URL: &str = "https://www.multikino.pl";
 
@@ -101,20 +101,33 @@ impl Multikino {
                     }
                 })?;
             let status = response.status();
+            let retry_after = if status == StatusCode::TOO_MANY_REQUESTS
+                || status == StatusCode::SERVICE_UNAVAILABLE
+            {
+                retry_after_delay(response.headers())
+            } else {
+                None
+            };
             if status.is_server_error()
                 || status == StatusCode::TOO_MANY_REQUESTS
                 || status == StatusCode::REQUEST_TIMEOUT
             {
-                let body_preview = response_body_preview(response).await;
+                let body_preview =
+                    response_body_preview(response, MAX_LOG_BODY_PREVIEW_CHARS).await;
                 debug!(
-                    "Multikino API retryable response operation={operation} url={url} status={status} body_preview={body_preview}",
+                    "Multikino API retryable response operation={operation} url={url} status={status} retry_after={retry_after:?} body_preview={body_preview}",
                 );
-                return Err(RetryDirective::retry(AppError::Http(format!(
+                let error = AppError::Http(format!(
                     "API Multikino zwróciło błąd podczas {operation}: status {status}"
-                ))));
+                ));
+                return Err(match retry_after {
+                    Some(delay) => RetryDirective::retry_after(error, delay),
+                    None => RetryDirective::retry(error),
+                });
             }
             if status.is_client_error() {
-                let body_preview = response_body_preview(response).await;
+                let body_preview =
+                    response_body_preview(response, MAX_LOG_BODY_PREVIEW_CHARS).await;
                 debug!(
                     "Multikino API non-retryable response operation={operation} url={url} status={status} body_preview={body_preview}",
                 );
@@ -159,8 +172,8 @@ impl Multikino {
 
         for group in groups {
             for cinema in group.cinemas {
-                if cinema.cinema_id.trim().is_empty() || !seen_ids.insert(cinema.cinema_id.clone())
-                {
+                let venue_id = cinema.cinema_id.trim();
+                if venue_id.is_empty() || !seen_ids.insert(venue_id.to_string()) {
                     continue;
                 }
 
@@ -172,7 +185,7 @@ impl Multikino {
 
                 venues.push(CinemaVenue {
                     chain_id: CinemaChainId::Multikino.as_str().to_string(),
-                    venue_id: cinema.cinema_id,
+                    venue_id: venue_id.to_string(),
                     venue_name,
                 });
             }
@@ -575,12 +588,4 @@ fn normalize_api_date(value: &str) -> Option<&str> {
 
 fn parse_release_year(value: &str) -> Option<i32> {
     value.get(0..4)?.parse::<i32>().ok()
-}
-
-async fn response_body_preview(response: reqwest::Response) -> String {
-    match response.text().await {
-        Ok(body) if body.trim().is_empty() => "<empty>".to_string(),
-        Ok(body) => preview_for_log(&body, MAX_LOG_BODY_PREVIEW_CHARS),
-        Err(error) => format!("<unavailable: {error}>"),
-    }
 }

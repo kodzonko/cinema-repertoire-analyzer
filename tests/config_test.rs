@@ -326,6 +326,19 @@ async fn run_interactive_configuration_fetches_all_chain_venues_concurrently() {
                     tracker: tracker.clone(),
                 },
             ),
+            delayed_registered_chain(
+                CinemaChainId::Multikino,
+                "Multikino",
+                DelayedCinemaClient {
+                    venues: vec![CinemaVenue {
+                        chain_id: "multikino".to_string(),
+                        venue_name: "Warszawa Złote Tarasy".to_string(),
+                        venue_id: "0034".to_string(),
+                    }],
+                    delay: Duration::from_millis(75),
+                    tracker: tracker.clone(),
+                },
+            ),
         ],
         FakeTmdbService { result: Default::default(), error: None },
     );
@@ -339,7 +352,7 @@ async fn run_interactive_configuration_fetches_all_chain_venues_concurrently() {
     .await
     .unwrap();
 
-    assert_eq!(tracker.max_in_flight(), 2);
+    assert_eq!(tracker.max_in_flight(), 3);
     assert_eq!(
         configured_settings.get_default_venue(CinemaChainId::CinemaCity),
         Some("Wroclaw - Wroclavia")
@@ -353,6 +366,16 @@ async fn run_interactive_configuration_fetches_all_chain_venues_concurrently() {
             .map(|venue| (venue.venue_name, venue.venue_id))
             .collect::<Vec<_>>(),
         vec![("Łódź - Helios".to_string(), "lodz/kino-helios".to_string())]
+    );
+    assert_eq!(
+        DatabaseManager::new(dependencies.paths.db_file())
+            .unwrap()
+            .get_all_venues("multikino")
+            .unwrap()
+            .into_iter()
+            .map(|venue| (venue.venue_name, venue.venue_id))
+            .collect::<Vec<_>>(),
+        vec![("Warszawa Złote Tarasy".to_string(), "0034".to_string())]
     );
 }
 
