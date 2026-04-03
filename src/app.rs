@@ -269,6 +269,24 @@ fn build_database_manager(paths: &AppPaths) -> AppResult<DatabaseManager> {
     DatabaseManager::new(paths.db_file())
 }
 
+async fn rehydrate_venues_database_if_missing(
+    settings: &Settings,
+    paths: &AppPaths,
+    registry: &Registry,
+) -> AppResult<()> {
+    if paths.db_file().exists() {
+        return Ok(());
+    }
+
+    let venues_by_chain =
+        fetch_registered_venues(settings, registry.get_registered_chains()).await?;
+    let payload = venues_by_chain
+        .into_iter()
+        .map(|(chain_id, venues)| (chain_id.as_str().to_string(), venues))
+        .collect::<HashMap<_, _>>();
+    build_database_manager(paths)?.replace_venues_batch(&payload)
+}
+
 async fn handle_repertoire(
     context: CommandContext<'_>,
     registry: &Registry,
@@ -281,6 +299,7 @@ async fn handle_repertoire(
     let registered_chain = resolve_chain(chain, context.settings, registry)?;
     let resolved_venue_name = resolve_venue_name(venue_name, &registered_chain, context.settings)?;
     let venue_name_parsed = cinema_venue_input_parser(&resolved_venue_name);
+    rehydrate_venues_database_if_missing(context.settings, context.paths, registry).await?;
     let db_manager = build_database_manager(context.paths)?;
     let found_venues =
         db_manager.find_venues_by_name(registered_chain.chain_id.as_str(), &venue_name_parsed)?;
@@ -316,6 +335,7 @@ async fn handle_venues_list(
     terminal: &mut dyn Terminal,
 ) -> AppResult<()> {
     let registered_chain = resolve_chain(chain, settings, registry)?;
+    rehydrate_venues_database_if_missing(settings, paths, registry).await?;
     let db_manager = build_database_manager(paths)?;
     let venues = db_manager.get_all_venues(registered_chain.chain_id.as_str())?;
     terminal.write_line(&render_venues_table(&venues, &registered_chain.display_name));
@@ -370,6 +390,7 @@ async fn handle_venues_search(
     terminal: &mut dyn Terminal,
 ) -> AppResult<()> {
     let registered_chain = resolve_chain(chain, settings, registry)?;
+    rehydrate_venues_database_if_missing(settings, paths, registry).await?;
     let db_manager = build_database_manager(paths)?;
     let venues = db_manager.find_venues_by_name(
         registered_chain.chain_id.as_str(),

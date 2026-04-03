@@ -689,6 +689,108 @@ async fn repertoire_command_bootstraps_configuration_before_running() {
 }
 
 #[tokio::test]
+async fn repertoire_command_rehydrates_missing_database_before_running() {
+    let temp_dir = tempdir().unwrap();
+    let dependencies = dependencies_with_chains(
+        temp_dir.path(),
+        FakePrompt::new(Vec::new(), Vec::new()),
+        vec![
+            registered_chain(
+                CinemaChainId::CinemaCity,
+                "Cinema City",
+                FakeCinemaClient::new(
+                    vec![Repertoire {
+                        title: "Test Movie".to_string(),
+                        genres: "Thriller".to_string(),
+                        play_length: "120 min".to_string(),
+                        original_language: "EN".to_string(),
+                        play_details: vec![MoviePlayDetails {
+                            format: "2D".to_string(),
+                            play_language: "NAP: PL".to_string(),
+                            play_times: vec![
+                                MoviePlayTime { value: "10:00".to_string(), url: None },
+                                MoviePlayTime { value: "12:30".to_string(), url: None },
+                            ],
+                        }],
+                        lookup_metadata: MovieLookupMetadata::default(),
+                    }],
+                    vec![
+                        CinemaVenue {
+                            chain_id: "cinema-city".to_string(),
+                            venue_name: "Warszawa - Janki".to_string(),
+                            venue_id: "2".to_string(),
+                        },
+                        CinemaVenue {
+                            chain_id: "cinema-city".to_string(),
+                            venue_name: "Wroclaw - Wroclavia".to_string(),
+                            venue_id: "3".to_string(),
+                        },
+                    ],
+                ),
+            ),
+            registered_chain(
+                CinemaChainId::Helios,
+                "Helios",
+                FakeCinemaClient::new(
+                    Vec::new(),
+                    vec![CinemaVenue {
+                        chain_id: "helios".to_string(),
+                        venue_name: "Łódź - Helios".to_string(),
+                        venue_id: "lodz/kino-helios".to_string(),
+                    }],
+                ),
+            ),
+        ],
+        FakeTmdbService { result: Default::default(), error: None },
+    );
+    let mut configured_settings = settings();
+    configured_settings
+        .user_preferences
+        .default_venues
+        .set(CinemaChainId::Helios, Some("Łódź - Helios".to_string()));
+    write_settings(&configured_settings, &dependencies.paths).unwrap();
+    assert!(!dependencies.paths.db_file().exists());
+    let mut terminal = BufferTerminal::default();
+
+    let exit_code = run_with_args(
+        vec!["quickrep".to_string(), "repertoire".to_string()],
+        &dependencies,
+        &mut terminal,
+    )
+    .await;
+
+    let output = terminal.into_string();
+    assert_eq!(exit_code, 0);
+    assert!(output.contains("Repertuar dla Cinema City"));
+    assert!(output.contains("Wroclaw - Wroclavia"));
+    assert!(output.contains("Test Movie"));
+    assert!(dependencies.paths.db_file().exists());
+    assert_eq!(
+        DatabaseManager::new(dependencies.paths.db_file())
+            .unwrap()
+            .get_all_venues("cinema-city")
+            .unwrap()
+            .into_iter()
+            .map(|venue| (venue.venue_name, venue.venue_id))
+            .collect::<Vec<_>>(),
+        vec![
+            ("Warszawa - Janki".to_string(), "2".to_string()),
+            ("Wroclaw - Wroclavia".to_string(), "3".to_string()),
+        ]
+    );
+    assert_eq!(
+        DatabaseManager::new(dependencies.paths.db_file())
+            .unwrap()
+            .get_all_venues("helios")
+            .unwrap()
+            .into_iter()
+            .map(|venue| (venue.venue_name, venue.venue_id))
+            .collect::<Vec<_>>(),
+        vec![("Łódź - Helios".to_string(), "lodz/kino-helios".to_string())]
+    );
+}
+
+#[tokio::test]
 async fn venues_commands_update_list_and_search_round_trip_through_database() {
     let temp_dir = tempdir().unwrap();
     let dependencies = dependencies(
