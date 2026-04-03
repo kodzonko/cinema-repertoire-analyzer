@@ -1458,7 +1458,7 @@ fn render_details_from_detailed(movie: &TmdbMovieDetailsResponse) -> TmdbMovieDe
 fn render_rating(vote_average: Option<f64>, vote_count: Option<u32>) -> String {
     match (vote_average, vote_count) {
         (Some(vote_average), Some(vote_count)) => {
-            format!("{vote_average}/10\n(głosy: {vote_count})")
+            format!("{vote_average:.1}/10\n(głosy: {vote_count})")
         }
         _ => String::new(),
     }
@@ -1566,4 +1566,14 @@ fn has_runtime_conflict(expected_runtime: Option<u16>, candidate_runtime: Option
         return false;
     };
     expected_runtime.abs_diff(candidate_runtime) > MAX_ACCEPTABLE_RUNTIME_CONFLICT_MINUTES
+}
+
+#[cfg(test)]
+mod tests {
+    use super::render_rating;
+
+    #[test]
+    fn render_rating_rounds_to_one_decimal_place() {
+        assert_eq!(render_rating(Some(6.717), Some(184)), "6.7/10\n(głosy: 184)");
+    }
 }
