@@ -29,6 +29,10 @@ fn load_settings_roundtrips_config_ini() {
         .user_preferences
         .default_venues
         .set(CinemaChainId::Helios, Some("Łódź - Helios".to_string()));
+    expected_settings
+        .user_preferences
+        .default_venues
+        .set(CinemaChainId::Multikino, Some("Warszawa Złote Tarasy".to_string()));
 
     write_settings(&expected_settings, &paths).unwrap();
     let loaded_settings = load_settings(&paths).unwrap();
@@ -82,6 +86,7 @@ tmdb_access_token = token\n\
 [default_venues]\n\
 cinema_city = Wroclaw - Wroclavia\n\
 helios = Łódź - Helios\n\
+multikino = Warszawa Złote Tarasy\n\
 ",
     )
     .unwrap();
@@ -94,6 +99,10 @@ helios = Łódź - Helios\n\
         Some("Wroclaw - Wroclavia")
     );
     assert_eq!(loaded_settings.get_default_venue(CinemaChainId::Helios), Some("Łódź - Helios"));
+    assert_eq!(
+        loaded_settings.get_default_venue(CinemaChainId::Multikino),
+        Some("Warszawa Złote Tarasy")
+    );
 }
 
 #[test]
