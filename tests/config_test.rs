@@ -129,6 +129,7 @@ fn bootstrap_rules_match_help_and_configure_flows() {
         "--help".to_string()
     ]));
     assert!(should_defer_bootstrap_to_command(&["configure".to_string()]));
+    assert!(should_defer_bootstrap_to_command(&["chains".to_string()]));
     assert!(!should_defer_bootstrap_to_command(&["repertoire".to_string()]));
 }
 

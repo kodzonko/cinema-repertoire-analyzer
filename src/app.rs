@@ -21,7 +21,7 @@ use crate::domain::{
 use crate::error::{AppError, AppResult};
 use crate::logging::init_logging;
 use crate::output::{
-    StdoutTerminal, Terminal, cinema_venue_input_parser, date_input_parser,
+    StdoutTerminal, Terminal, cinema_venue_input_parser, date_input_parser, render_chains_table,
     render_repertoire_table, render_venues_table,
 };
 use crate::persistence::DatabaseManager;
@@ -142,6 +142,16 @@ pub async fn run_with_args(
         };
     }
 
+    if matches!(command, Commands::Chains) {
+        return match handle_chains_list(&dependencies.registry, terminal) {
+            Ok(()) => 0,
+            Err(error) => {
+                terminal.write_line(&error.to_string());
+                1
+            }
+        };
+    }
+
     let settings = match settings {
         Some(settings) => settings,
         None => match load_settings(&dependencies.paths) {
@@ -155,6 +165,7 @@ pub async fn run_with_args(
 
     let result = match command {
         Commands::Configure => unreachable!(),
+        Commands::Chains => unreachable!(),
         Commands::Repertoire { chain, venue_name, date } => {
             handle_repertoire(
                 CommandContext { settings: &settings, paths: &dependencies.paths },
@@ -209,6 +220,16 @@ pub async fn run_with_args(
             1
         }
     }
+}
+
+fn handle_chains_list(registry: &Registry, terminal: &mut dyn Terminal) -> AppResult<()> {
+    let chains = registry
+        .get_registered_chains()
+        .into_iter()
+        .map(|chain| (chain.display_name, chain.chain_id.as_str().to_string()))
+        .collect::<Vec<_>>();
+    terminal.write_line(&render_chains_table(&chains));
+    Ok(())
 }
 
 pub fn resolve_single_venue(found_venues: &[CinemaVenue]) -> AppResult<CinemaVenue> {

@@ -33,6 +33,7 @@ fn binary_help_lists_top_level_commands() {
         .stdout(predicates::str::contains("Użycie"))
         .stdout(predicates::str::contains("Polecenia"))
         .stdout(predicates::str::contains("Opcje"))
+        .stdout(predicates::str::contains("chains"))
         .stdout(predicates::str::contains("configure"))
         .stdout(predicates::str::contains("repertoire"))
         .stdout(predicates::str::contains("venues"));
@@ -64,6 +65,50 @@ async fn repertoire_command_exits_for_unsupported_chain() {
 
     assert_eq!(exit_code, 1);
     assert!(terminal.into_string().contains("Nieobsługiwana sieć kin"));
+}
+
+#[tokio::test]
+async fn chains_command_lists_supported_chains_without_configuration() {
+    let temp_dir = tempdir().unwrap();
+    let dependencies = dependencies_with_chains(
+        temp_dir.path(),
+        FakePrompt::new(Vec::new(), Vec::new()),
+        vec![
+            registered_chain(
+                CinemaChainId::CinemaCity,
+                "Cinema City",
+                FakeCinemaClient::new(Vec::new(), Vec::new()),
+            ),
+            registered_chain(
+                CinemaChainId::Helios,
+                "Helios",
+                FakeCinemaClient::new(Vec::new(), Vec::new()),
+            ),
+            registered_chain(
+                CinemaChainId::Multikino,
+                "Multikino",
+                FakeCinemaClient::new(Vec::new(), Vec::new()),
+            ),
+        ],
+        FakeTmdbService { result: Default::default(), error: None },
+    );
+    let mut terminal = BufferTerminal::default();
+
+    let exit_code = run_with_args(
+        vec!["quickrep".to_string(), "chains".to_string()],
+        &dependencies,
+        &mut terminal,
+    )
+    .await;
+
+    let output = terminal.into_string();
+    assert_eq!(exit_code, 0);
+    assert!(output.contains("Obsługiwane sieci kin"));
+    assert!(output.contains("Cinema City"));
+    assert!(output.contains("cinema-city"));
+    assert!(output.contains("Helios"));
+    assert!(output.contains("Multikino"));
+    assert!(!dependencies.paths.config_file().exists());
 }
 
 #[tokio::test]
